@@ -6,7 +6,7 @@ from glossa import __version__
 from glossa.auth import get_auth_context
 from glossa.config import get_settings
 from glossa.db.client import close_db, init_db
-from glossa.routes import jobs, lint, pages, query, sources, spaces, usage, webhooks
+from glossa.routes import admin, api_keys, jobs, lint, pages, query, sources, spaces, usage, webhooks
 from glossa.storage.minio_backend import MinioStorageBackend
 
 
@@ -39,6 +39,8 @@ app.include_router(query.router, dependencies=_auth)
 app.include_router(lint.router, dependencies=_auth)
 app.include_router(usage.tenant_router, dependencies=_auth)
 app.include_router(usage.space_router, dependencies=_auth)
+app.include_router(admin.router, dependencies=_auth)
+app.include_router(api_keys.router, dependencies=_auth)
 
 
 @app.get("/healthz", tags=["meta"])
