@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import json
 import logging
+import time
 from datetime import UTC, datetime
 
 import httpx
@@ -36,11 +37,17 @@ async def fire(*, space_id: str, event: WebhookEvent, payload: dict) -> None:
 
     async with httpx.AsyncClient(timeout=10.0) as client:
         for hook in hooks:
-            signature = hmac.new(hook.secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+            timestamp = int(time.time())
+            signed_payload = f"{timestamp}.".encode() + body
+            signature = hmac.new(
+                hook.secret.encode("utf-8"),
+                signed_payload,
+                hashlib.sha256,
+            ).hexdigest()
             headers = {
                 "Content-Type": "application/json",
                 "X-Glossa-Event": event.value,
-                "X-Glossa-Signature": f"sha256={signature}",
+                "X-Glossa-Signature": f"t={timestamp},v1={signature}",
             }
             try:
                 resp = await client.post(hook.url, content=body, headers=headers)
