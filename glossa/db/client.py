@@ -53,3 +53,9 @@ async def _create_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.usage_events.create_index([("tenant_id", 1), ("operation", 1)])
 
     await db.tenant_quotas.create_index("tenant_id", unique=True)
+
+    await db.tenants.create_index("id", unique=True)
+    await db.tenants.create_index("owner_email", unique=True)
+    await db.api_keys.create_index("id", unique=True)
+    await db.api_keys.create_index("hashed_key", unique=True)
+    await db.api_keys.create_index("tenant_id")
