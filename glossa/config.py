@@ -29,6 +29,9 @@ class Settings(BaseSettings):
 
     ingest_max_source_chars: int = 200_000
 
+    auth_required: bool = False
+    bootstrap_admin_api_key: str | None = None
+
 
 def get_settings() -> Settings:
     return Settings()

@@ -1,8 +1,9 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 
 from glossa import __version__
+from glossa.auth import get_auth_context
 from glossa.config import get_settings
 from glossa.db.client import close_db, init_db
 from glossa.routes import jobs, lint, pages, query, sources, spaces, usage, webhooks
@@ -27,15 +28,17 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.include_router(spaces.router)
-app.include_router(sources.router)
-app.include_router(pages.router)
-app.include_router(jobs.router)
-app.include_router(webhooks.router)
-app.include_router(query.router)
-app.include_router(lint.router)
-app.include_router(usage.tenant_router)
-app.include_router(usage.space_router)
+_auth = [Depends(get_auth_context)]
+
+app.include_router(spaces.router, dependencies=_auth)
+app.include_router(sources.router, dependencies=_auth)
+app.include_router(pages.router, dependencies=_auth)
+app.include_router(jobs.router, dependencies=_auth)
+app.include_router(webhooks.router, dependencies=_auth)
+app.include_router(query.router, dependencies=_auth)
+app.include_router(lint.router, dependencies=_auth)
+app.include_router(usage.tenant_router, dependencies=_auth)
+app.include_router(usage.space_router, dependencies=_auth)
 
 
 @app.get("/healthz", tags=["meta"])
