@@ -1,0 +1,44 @@
+services:
+  glossa:
+    build: .
+    ports:
+      - "8200:8200"
+    # Secrets (GLOSSA_HOSTED_ANTHROPIC_API_KEY, etc.) live in .env, which is
+    # gitignored. Copy .env.example -> .env and fill in your keys before
+    # starting the stack. Inline defaults below are non-secret infra pointers.
+    env_file:
+      - .env
+    environment:
+      GLOSSA_MONGO_URI: mongodb://mongo:27017
+      GLOSSA_MONGO_DB: glossa
+      GLOSSA_MINIO_ENDPOINT: minio:9000
+      GLOSSA_MINIO_ACCESS_KEY: glossa
+      GLOSSA_MINIO_SECRET_KEY: glossa-secret
+      GLOSSA_MINIO_BUCKET: glossa-spaces
+      GLOSSA_MINIO_SECURE: "false"
+    depends_on:
+      - mongo
+      - minio
+
+  mongo:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: glossa
+      MINIO_ROOT_PASSWORD: glossa-secret
+    volumes:
+      - minio_data:/data
+
+volumes:
+  mongo_data:
+  minio_data:
