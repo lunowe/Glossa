@@ -29,12 +29,16 @@ async def get_auth_context(request: Request) -> AuthContext:
 
     if token is None:
         if not settings.auth_required:
-            return AuthContext.system()
+            ctx = AuthContext.system()
+            request.state.auth = ctx
+            return ctx
         raise HTTPException(status_code=401, detail="missing Authorization header")
 
     bootstrap = settings.bootstrap_admin_api_key
     if bootstrap and compare_digest(token, bootstrap):
-        return AuthContext.system()
+        ctx = AuthContext.system()
+        request.state.auth = ctx
+        return ctx
 
     db = get_db()
     key_doc = await db.api_keys.find_one({"hashed_key": hash_key(token)})
@@ -59,12 +63,14 @@ async def get_auth_context(request: Request) -> AuthContext:
     except Exception:
         logger.warning("failed to update last_used_at for api_key=%s", api_key.id, exc_info=True)
 
-    return AuthContext(
+    ctx = AuthContext(
         tenant_id=tenant.id,
         api_key_id=api_key.id,
         scopes=tuple(api_key.scopes),
         is_system=False,
     )
+    request.state.auth = ctx
+    return ctx
 
 
 def require_scope(scope: Scope):

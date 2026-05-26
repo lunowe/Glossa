@@ -3,10 +3,11 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI
 
 from glossa import __version__
+from glossa.activity.middleware import ActivityMiddleware
 from glossa.auth import get_auth_context
 from glossa.config import get_settings
 from glossa.db.client import close_db, init_db
-from glossa.routes import admin, api_keys, jobs, lint, pages, query, sources, spaces, usage, webhooks
+from glossa.routes import activity, admin, api_keys, jobs, lint, pages, query, sources, spaces, usage, webhooks
 from glossa.storage.minio_backend import MinioStorageBackend
 
 
@@ -28,6 +29,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.add_middleware(ActivityMiddleware)
+
 _auth = [Depends(get_auth_context)]
 
 app.include_router(spaces.router, dependencies=_auth)
@@ -41,6 +44,7 @@ app.include_router(usage.tenant_router, dependencies=_auth)
 app.include_router(usage.space_router, dependencies=_auth)
 app.include_router(admin.router, dependencies=_auth)
 app.include_router(api_keys.router, dependencies=_auth)
+app.include_router(activity.router, dependencies=_auth)
 
 
 @app.get("/healthz", tags=["meta"])

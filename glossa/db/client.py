@@ -59,3 +59,9 @@ async def _create_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.api_keys.create_index("id", unique=True)
     await db.api_keys.create_index("hashed_key", unique=True)
     await db.api_keys.create_index("tenant_id")
+
+    await db.request_events.create_index(
+        "created_at",
+        expireAfterSeconds=7776000,
+    )
+    await db.request_events.create_index([("tenant_id", 1), ("created_at", -1)])
