@@ -1,5 +1,8 @@
-from fastapi import APIRouter, HTTPException, Request
+from typing import Annotated
 
+from fastapi import APIRouter, Depends, HTTPException, Request
+
+from glossa.auth import AuthContext, get_auth_context, space_query
 from glossa.db.client import get_db
 from glossa.lint.workflow import enqueue_lint
 from glossa.models.job import Job
@@ -9,9 +12,13 @@ router = APIRouter(prefix="/spaces/{space_id}/lint", tags=["lint"])
 
 
 @router.post("", response_model=Job)
-async def post_lint(space_id: str, request: Request) -> Job:
+async def post_lint(
+    space_id: str,
+    request: Request,
+    ctx: Annotated[AuthContext, Depends(get_auth_context)],
+) -> Job:
     db = get_db()
-    space_doc = await db.spaces.find_one({"id": space_id}, {"tenant_id": 1})
+    space_doc = await db.spaces.find_one(space_query(space_id, ctx), {"tenant_id": 1})
     if not space_doc:
         raise HTTPException(status_code=404, detail="space not found")
     try:

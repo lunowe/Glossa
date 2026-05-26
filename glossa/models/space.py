@@ -37,11 +37,11 @@ class Space(BaseModel):
 
 
 class SpaceCreate(BaseModel):
-    tenant_id: str
     name: str
     slug: str | None = None
     llm_config: LLMConfig | None = None
     schema_markdown: str | None = None
+    tenant_id: str | None = None  # admin override only — ignored otherwise
 
 
 class SpaceUpdate(BaseModel):

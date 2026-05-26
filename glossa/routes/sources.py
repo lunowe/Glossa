@@ -1,8 +1,10 @@
 from datetime import UTC, datetime
+from typing import Annotated
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
+from glossa.auth import AuthContext, get_auth_context, space_query
 from glossa.db.client import get_db
 from glossa.ingest.workflow import enqueue_ingest
 from glossa.models.job import Job
@@ -13,9 +15,13 @@ router = APIRouter(prefix="/spaces/{space_id}/sources", tags=["sources"])
 
 
 @router.post("", response_model=Source)
-async def create_source(space_id: str, body: SourceCreate) -> Source:
+async def create_source(
+    space_id: str,
+    body: SourceCreate,
+    ctx: Annotated[AuthContext, Depends(get_auth_context)],
+) -> Source:
     db = get_db()
-    if not await db.spaces.find_one({"id": space_id}, {"id": 1}):
+    if not await db.spaces.find_one(space_query(space_id, ctx), {"id": 1}):
         raise HTTPException(status_code=404, detail="space not found")
     source = Source(
         id=f"src_{uuid4().hex[:12]}",
@@ -34,15 +40,28 @@ async def create_source(space_id: str, body: SourceCreate) -> Source:
 
 
 @router.get("", response_model=list[Source])
-async def list_sources(space_id: str, limit: int = 50, offset: int = 0) -> list[Source]:
+async def list_sources(
+    space_id: str,
+    ctx: Annotated[AuthContext, Depends(get_auth_context)],
+    limit: int = 50,
+    offset: int = 0,
+) -> list[Source]:
     db = get_db()
+    if not await db.spaces.find_one(space_query(space_id, ctx), {"id": 1}):
+        raise HTTPException(status_code=404, detail="space not found")
     cursor = db.sources.find({"space_id": space_id}).skip(offset).limit(limit)
     return [Source.model_validate(doc) async for doc in cursor]
 
 
 @router.get("/{source_id}", response_model=Source)
-async def get_source(space_id: str, source_id: str) -> Source:
+async def get_source(
+    space_id: str,
+    source_id: str,
+    ctx: Annotated[AuthContext, Depends(get_auth_context)],
+) -> Source:
     db = get_db()
+    if not await db.spaces.find_one(space_query(space_id, ctx), {"id": 1}):
+        raise HTTPException(status_code=404, detail="space not found")
     doc = await db.sources.find_one({"id": source_id, "space_id": space_id})
     if not doc:
         raise HTTPException(status_code=404, detail="source not found")
@@ -50,14 +69,19 @@ async def get_source(space_id: str, source_id: str) -> Source:
 
 
 @router.post("/{source_id}/ingest", response_model=Job)
-async def ingest_source(space_id: str, source_id: str, request: Request) -> Job:
+async def ingest_source(
+    space_id: str,
+    source_id: str,
+    request: Request,
+    ctx: Annotated[AuthContext, Depends(get_auth_context)],
+) -> Job:
     db = get_db()
+    space_doc = await db.spaces.find_one(space_query(space_id, ctx), {"tenant_id": 1})
+    if not space_doc:
+        raise HTTPException(status_code=404, detail="space not found")
     source_doc = await db.sources.find_one({"id": source_id, "space_id": space_id})
     if not source_doc:
         raise HTTPException(status_code=404, detail="source not found")
-    space_doc = await db.spaces.find_one({"id": space_id}, {"tenant_id": 1})
-    if not space_doc:
-        raise HTTPException(status_code=404, detail="space not found")
     try:
         await check_quota(space_doc["tenant_id"])
     except QuotaExceededError as e:

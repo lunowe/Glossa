@@ -1,5 +1,8 @@
-from fastapi import APIRouter, HTTPException, Request
+from typing import Annotated
 
+from fastapi import APIRouter, Depends, HTTPException, Request
+
+from glossa.auth import AuthContext, get_auth_context, space_query
 from glossa.db.client import get_db
 from glossa.models.page import Page, PageWithContent
 
@@ -9,11 +12,14 @@ router = APIRouter(prefix="/spaces/{space_id}", tags=["pages"])
 @router.get("/pages", response_model=list[Page])
 async def list_pages(
     space_id: str,
+    ctx: Annotated[AuthContext, Depends(get_auth_context)],
     kind: str | None = None,
     path_prefix: str | None = None,
     limit: int = 100,
 ) -> list[Page]:
     db = get_db()
+    if not await db.spaces.find_one(space_query(space_id, ctx), {"id": 1}):
+        raise HTTPException(status_code=404, detail="space not found")
     query: dict = {"space_id": space_id}
     if kind:
         query["kind"] = kind
@@ -24,8 +30,15 @@ async def list_pages(
 
 
 @router.get("/pages/{path:path}", response_model=PageWithContent)
-async def get_page(space_id: str, path: str, request: Request) -> PageWithContent:
+async def get_page(
+    space_id: str,
+    path: str,
+    request: Request,
+    ctx: Annotated[AuthContext, Depends(get_auth_context)],
+) -> PageWithContent:
     db = get_db()
+    if not await db.spaces.find_one(space_query(space_id, ctx), {"id": 1}):
+        raise HTTPException(status_code=404, detail="space not found")
     doc = await db.pages.find_one({"space_id": space_id, "path": path})
     if not doc:
         raise HTTPException(status_code=404, detail="page not found")
@@ -35,18 +48,27 @@ async def get_page(space_id: str, path: str, request: Request) -> PageWithConten
 
 
 @router.get("/index")
-async def get_index(space_id: str, request: Request) -> dict:
+async def get_index(
+    space_id: str,
+    request: Request,
+    ctx: Annotated[AuthContext, Depends(get_auth_context)],
+) -> dict:
     db = get_db()
-    if not await db.spaces.find_one({"id": space_id}, {"id": 1}):
+    if not await db.spaces.find_one(space_query(space_id, ctx), {"id": 1}):
         raise HTTPException(status_code=404, detail="space not found")
     content = await request.app.state.storage.read_page(space_id, "index.md")
     return {"path": "index.md", "content": content}
 
 
 @router.get("/log")
-async def get_log(space_id: str, request: Request, tail: int | None = None) -> dict:
+async def get_log(
+    space_id: str,
+    request: Request,
+    ctx: Annotated[AuthContext, Depends(get_auth_context)],
+    tail: int | None = None,
+) -> dict:
     db = get_db()
-    if not await db.spaces.find_one({"id": space_id}, {"id": 1}):
+    if not await db.spaces.find_one(space_query(space_id, ctx), {"id": 1}):
         raise HTTPException(status_code=404, detail="space not found")
     content = await request.app.state.storage.read_page(space_id, "log.md")
     if tail and content:
@@ -58,9 +80,13 @@ async def get_log(space_id: str, request: Request, tail: int | None = None) -> d
 
 
 @router.get("/lint-report")
-async def get_lint_report(space_id: str, request: Request) -> dict:
+async def get_lint_report(
+    space_id: str,
+    request: Request,
+    ctx: Annotated[AuthContext, Depends(get_auth_context)],
+) -> dict:
     db = get_db()
-    if not await db.spaces.find_one({"id": space_id}, {"id": 1}):
+    if not await db.spaces.find_one(space_query(space_id, ctx), {"id": 1}):
         raise HTTPException(status_code=404, detail="space not found")
     content = await request.app.state.storage.read_page(space_id, "lint_report.md")
     if not content:
