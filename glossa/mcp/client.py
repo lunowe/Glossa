@@ -3,9 +3,11 @@
 Each method maps to one Glossa endpoint and returns the parsed JSON. The
 client is shared across all MCP tool calls in one server process.
 
-Auth: an optional bearer token (``GLOSSA_API_TOKEN``) is forwarded on every
-request so the wrapper is forward-compatible with the auth layer Glossa will
-add. Today Glossa accepts unauthenticated calls; the header is harmless.
+Auth: the ``GLOSSA_API_TOKEN`` env var supplies a ``glsk_live_*`` bearer
+key, forwarded on every request. The key tenants the request — Glossa
+scopes every response by the token's owning tenant. With a self-hosted
+Glossa running in ``GLOSSA_AUTH_REQUIRED=false`` mode, the token can be
+omitted and requests run as the synthetic admin context.
 """
 
 import os

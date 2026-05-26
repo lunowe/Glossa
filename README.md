@@ -69,9 +69,107 @@ POST   /spaces/{id}/webhooks                      register
 GET    /spaces/{id}/webhooks                      list
 DELETE /spaces/{id}/webhooks/{wid}                remove
 
+# Tenants & API keys (admin)
+POST   /admin/tenants                              create tenant
+GET    /admin/tenants                              list (?status=)
+GET    /admin/tenants/{tid}                        detail
+PATCH  /admin/tenants/{tid}                        suspend / reactivate / re-plan
+POST   /tenants/{tid}/api-keys                     issue (plaintext shown once)
+GET    /tenants/{tid}/api-keys                     list (no plaintext)
+DELETE /tenants/{tid}/api-keys/{kid}               revoke
+
+# Activity
+GET    /tenants/{tid}/activity/requests            paginated audit log
+GET    /tenants/{tid}/activity/summary             counts by status / path
+
 # Meta
 GET    /healthz
 ```
+
+## Authentication
+
+Every API call carries a Bearer token tied to a tenant:
+
+    Authorization: Bearer glsk_live_<random>
+
+Keys are issued through the admin surface and tied 1:1 to a tenant. The
+plaintext key is shown ONCE at creation — only the SHA-256 hash is stored.
+Lose it, rotate it.
+
+### Modes
+
+`GLOSSA_AUTH_REQUIRED` (default `false`) controls the absence-of-header
+path:
+
+| Mode | No header | Bad header |
+|------|-----------|------------|
+| `false` (self-host / dev) | Synthetic admin context. All routes pass. | 401 |
+| `true` (hosted) | 401 | 401 |
+
+A request that DOES carry an `Authorization` header is always validated —
+sending a token is a positive identity claim; we don't silently ignore it.
+
+### Bootstrapping the first tenant
+
+Set `GLOSSA_BOOTSTRAP_ADMIN_API_KEY=<some long random string>` in the
+environment. Requests bearing exactly that token get a synthetic admin
+context — no DB row required. Use it once to issue real keys, then unset
+the env var:
+
+    # Create the first tenant
+    curl -X POST http://localhost:8200/admin/tenants \
+      -H "Authorization: Bearer $GLOSSA_BOOTSTRAP_ADMIN_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{"name": "Acme", "owner_email": "ops@acme.com"}'
+
+    # Issue a key for that tenant
+    curl -X POST http://localhost:8200/tenants/<tid>/api-keys \
+      -H "Authorization: Bearer $GLOSSA_BOOTSTRAP_ADMIN_API_KEY" \
+      -d '{"label": "production"}'
+
+The response includes a `plaintext` field exactly once. Save it; the API
+will never show it again.
+
+### Tenant isolation
+
+Every route filters by the caller's `tenant_id`. Cross-tenant access
+returns **404** (not 403) — Glossa never reveals whether a space, job,
+or page exists for someone else.
+
+### Scopes
+
+Issued keys carry a list of scopes. Defaults: `spaces:read`,
+`spaces:write`, `sources:write`, `query`, `lint`. `admin` is not in the
+default set; admin scope is what unlocks `/admin/*` and cross-tenant
+operations.
+
+### Activity & quotas
+
+`GET /tenants/{tid}/activity/requests` — per-request audit log
+(method, path, status, duration, key_id). Retained 90 days.
+
+`GET /tenants/{tid}/activity/summary` — counts by status / path over
+a window (default 24h).
+
+`PUT /tenants/{tid}/quota` — set caps. Six dimensions:
+
+- `monthly_cost_limit_usd` — LLM spend across the calendar month
+- `monthly_token_limit` — total tokens across the calendar month
+- `max_sources_per_space` — count of sources in any one space
+- `max_storage_bytes` — total page bytes across all spaces of the tenant
+- `max_requests_per_minute` — sliding-window rate limit (cost/token/lint/query)
+- `allowed_models` — optional whitelist of model strings
+
+`GET /tenants/{tid}/quota` returns the live usage gauge for every dimension.
+The rate limiter is in-process; multi-worker deployments need Redis-backed
+coordination (deferred).
+
+### Self-hosting
+
+`docker compose up --build` starts in `auth_required=false` mode by
+default. Existing local tooling (the MCP server, the Obsidian sync) all
+keep working with no token configured. Set `GLOSSA_AUTH_REQUIRED=true`
+and issue real keys to flip on tenant enforcement.
 
 ## Bucket layout
 
@@ -127,6 +225,19 @@ runs roughly:
 
 Job status (`queued` → `running` → `succeeded`/`failed`) and source status are
 both kept current; poll `GET /jobs/{id}` or subscribe a webhook.
+
+### Webhook signatures
+
+Outbound webhook requests carry a Stripe-style signature:
+
+    X-Glossa-Signature: t=<unix_seconds>,v1=<hex_hmac_sha256>
+
+Where `v1` is `hmac_sha256(secret, f"{t}.".encode() + body_bytes)`.
+
+The `t=` timestamp lets receivers reject replays — Glossa rejects
+timestamps outside a 5-minute window when verifying inbound calls.
+Use `glossa.webhooks.signing.verify_signature(...)` from the SDK to
+verify on the receiving side without re-implementing the format.
 
 ## How lint works
 
@@ -284,7 +395,9 @@ v0.1 functional MVP. **Implemented:**
 - BYO LLM driver (any OpenAI-compatible endpoint)
 - Push and pull source ingestion
 - In-process background task runner with per-space serialisation
-- 84 tests covering frontmatter, JSON parsing, slugging, end-to-end ingest, end-to-end query, end-to-end lint, MCP client + server wiring
+- Hosted multi-tenant auth (`glsk_live_*` API keys, tenant scoping with 404-on-cross-tenant, activity tracking, Stripe-style webhook signatures)
+- Per-tenant quotas across six dimensions (cost, tokens, sources/space, storage bytes, requests/minute, model whitelist)
+- 227 tests covering frontmatter, JSON parsing, slugging, end-to-end ingest, end-to-end query, end-to-end lint, MCP client + server wiring, auth + tenant isolation, admin + key issuance, activity middleware, webhook signing, quota extensions
 
 **Not implemented yet:**
 
