@@ -5,7 +5,12 @@ from glossa.usage.aggregator import (
     aggregate_tenant_summary,
 )
 from glossa.usage.models import Operation, TenantQuota, UsageEvent, UsagePeriodSummary
-from glossa.usage.quota import QuotaExceededError, check_quota
+from glossa.usage.quota import (
+    QuotaExceededError,
+    check_quota,
+    check_source_quota,
+    check_storage_quota_before_write,
+)
 from glossa.usage.recorder import record_usage
 
 __all__ = [
@@ -19,5 +24,7 @@ __all__ = [
     "aggregate_tenant_by_space",
     "aggregate_tenant_summary",
     "check_quota",
+    "check_source_quota",
+    "check_storage_quota_before_write",
     "record_usage",
 ]

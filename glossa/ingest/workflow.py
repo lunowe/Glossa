@@ -222,6 +222,7 @@ async def _run_ingest_inner(
             new_content=new_content,
             source_refs=merged_refs,
             job_id=job_id,
+            tenant_id=space.tenant_id,
         )
         if is_new:
             pages_created.append(entity.page_path)
@@ -246,6 +247,7 @@ async def _run_ingest_inner(
         new_content=summary_markdown,
         source_refs=[source.id],
         job_id=job_id,
+        tenant_id=space.tenant_id,
     )
     if sum_is_new:
         pages_created.append(summary_path)

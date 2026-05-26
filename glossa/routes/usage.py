@@ -102,6 +102,9 @@ async def update_tenant_quota(
         monthly_cost_limit_usd=body.monthly_cost_limit_usd,
         monthly_token_limit=body.monthly_token_limit,
         allowed_models=body.allowed_models,
+        max_sources_per_space=body.max_sources_per_space,
+        max_storage_bytes=body.max_storage_bytes,
+        max_requests_per_minute=body.max_requests_per_minute,
         notes=body.notes,
     )
 

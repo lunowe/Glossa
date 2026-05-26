@@ -13,6 +13,7 @@ from glossa.ingest.extract import ExtractedEntity
 from glossa.ingest.prompts import SYSTEM_INGEST_UPDATE_PAGE, update_page_user_prompt
 from glossa.llm.base import LLMDriver, LLMMessage
 from glossa.models.page import Page, PageKind
+from glossa.usage.quota import check_storage_quota_before_write
 from glossa.utils import frontmatter
 from glossa.utils.json_parse import LLMJSONError, parse
 
@@ -43,10 +44,15 @@ async def upsert_page(
     new_content: str,
     source_refs: list[str],
     job_id: str,
+    tenant_id: str | None = None,
 ) -> tuple[bool, bool]:
     """Write a page to storage and upsert its DB record.
 
     Returns ``(is_new, is_changed)``.
+
+    If ``tenant_id`` is provided, the tenant's storage-bytes quota is
+    enforced before the write. ``QuotaExceededError`` is raised on block;
+    the ingest workflow translates that into a failed Job.
     """
     storage_path = _storage_path(page_path)
     existing = await storage.read_page(space_id, storage_path)
@@ -54,6 +60,10 @@ async def upsert_page(
     is_changed = existing != new_content
     if not is_changed:
         return is_new, is_changed
+
+    size_bytes = len(new_content.encode("utf-8"))
+    if tenant_id is not None:
+        await check_storage_quota_before_write(tenant_id, size_bytes)
 
     await storage.write_page(space_id, storage_path, new_content)
 
@@ -71,6 +81,7 @@ async def upsert_page(
                 frontmatter=fm,
                 source_refs=source_refs,
                 backlinks=[],
+                size_bytes=size_bytes,
                 updated_at=now,
                 last_touched_by_job_id=job_id,
             ).model_dump(),

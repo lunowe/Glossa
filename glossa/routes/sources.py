@@ -9,7 +9,7 @@ from glossa.db.client import get_db
 from glossa.ingest.workflow import enqueue_ingest
 from glossa.models.job import Job
 from glossa.models.source import Source, SourceCreate, SourceStatus
-from glossa.usage.quota import QuotaExceededError, check_quota
+from glossa.usage.quota import QuotaExceededError, check_quota, check_source_quota
 
 router = APIRouter(prefix="/spaces/{space_id}/sources", tags=["sources"])
 
@@ -21,8 +21,19 @@ async def create_source(
     ctx: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> Source:
     db = get_db()
-    if not await db.spaces.find_one(space_query(space_id, ctx), {"id": 1}):
+    space_doc = await db.spaces.find_one(space_query(space_id, ctx), {"id": 1, "tenant_id": 1})
+    if not space_doc:
         raise HTTPException(status_code=404, detail="space not found")
+    # System contexts (self-host / bootstrap admin) are not real tenants and
+    # are exempt from per-space source quotas.
+    if not ctx.is_system:
+        try:
+            await check_source_quota(space_doc["tenant_id"], space_id)
+        except QuotaExceededError as e:
+            raise HTTPException(
+                status_code=402,
+                detail={"reason": e.reason, "quota": e.status.model_dump()},
+            ) from e
     source = Source(
         id=f"src_{uuid4().hex[:12]}",
         space_id=space_id,

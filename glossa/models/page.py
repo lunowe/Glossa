@@ -22,6 +22,7 @@ class Page(BaseModel):
     frontmatter: dict = Field(default_factory=dict)
     source_refs: list[str] = Field(default_factory=list)
     backlinks: list[str] = Field(default_factory=list)
+    size_bytes: int = 0
     updated_at: datetime
     last_touched_by_job_id: str | None = None
 

@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from glossa.auth import AuthContext, get_auth_context, is_admin, space_query, tenant_scope_filter
 from glossa.db.client import get_db
 from glossa.models.space import Space, SpaceCreate, SpaceStats, SpaceUpdate
+from glossa.usage.quota import QuotaExceededError, check_storage_quota_before_write
 
 router = APIRouter(prefix="/spaces", tags=["spaces"])
 
@@ -113,8 +114,17 @@ async def put_schema(
     ctx: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> dict:
     db = get_db()
-    if not await db.spaces.find_one(space_query(space_id, ctx), {"id": 1}):
+    space_doc = await db.spaces.find_one(space_query(space_id, ctx), {"id": 1, "tenant_id": 1})
+    if not space_doc:
         raise HTTPException(status_code=404, detail="space not found")
+    if not ctx.is_system:
+        try:
+            await check_storage_quota_before_write(space_doc["tenant_id"], len(schema_markdown.encode("utf-8")))
+        except QuotaExceededError as e:
+            raise HTTPException(
+                status_code=402,
+                detail={"reason": e.reason, "quota": e.status.model_dump()},
+            ) from e
     await request.app.state.storage.write_page(space_id, "schema.md", schema_markdown)
     return {"ok": True, "path": "schema.md"}
 
