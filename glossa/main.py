@@ -7,7 +7,8 @@ from glossa.activity.middleware import ActivityMiddleware
 from glossa.auth import get_auth_context
 from glossa.config import get_settings
 from glossa.db.client import close_db, init_db
-from glossa.routes import activity, admin, api_keys, jobs, lint, pages, query, sources, spaces, usage, webhooks
+from glossa.oauth import register_default_strategies
+from glossa.routes import activity, admin, api_keys, auth, jobs, lint, pages, query, sources, spaces, usage, webhooks
 from glossa.storage.minio_backend import MinioStorageBackend
 
 
@@ -18,6 +19,7 @@ async def lifespan(app: FastAPI):
     app.state.settings = settings
     app.state.storage = MinioStorageBackend(settings)
     await app.state.storage.ensure_bucket()
+    register_default_strategies(settings)
     yield
     await close_db()
 
@@ -45,6 +47,8 @@ app.include_router(usage.space_router, dependencies=_auth)
 app.include_router(admin.router, dependencies=_auth)
 app.include_router(api_keys.router, dependencies=_auth)
 app.include_router(activity.router, dependencies=_auth)
+
+app.include_router(auth.router)
 
 
 @app.get("/healthz", tags=["meta"])

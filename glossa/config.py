@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     auth_required: bool = False
     bootstrap_admin_api_key: str | None = None
 
+    google_oauth_client_id: str | None = None
+    google_oauth_client_secret: str | None = None
+    github_oauth_client_id: str | None = None
+    github_oauth_client_secret: str | None = None
+    oauth_state_ttl_minutes: int = 10
+
 
 def get_settings() -> Settings:
     return Settings()
