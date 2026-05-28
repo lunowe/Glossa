@@ -15,6 +15,19 @@ from glossa.sessions import (
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
+def _resolve_post_login_redirect(state_redirect_to: str | None) -> str:
+    """Choose where to send the user after OAuth callback success.
+
+    Only honors ``state_redirect_to`` if it's an internal path (starts with ``/``
+    and contains no scheme separator ``://``). Falls back to ``/dashboard/``
+    otherwise. Prevents open-redirect attacks where an attacker crafts an
+    /auth/{provider}/start?redirect_to=http://evil.com link.
+    """
+    if state_redirect_to and state_redirect_to.startswith("/") and "://" not in state_redirect_to:
+        return state_redirect_to
+    return "/dashboard/"
+
+
 @router.get("/{provider}/start")
 async def start_oauth(
     provider: str,
@@ -63,7 +76,8 @@ async def oauth_callback(
         ip=request.client.host if request.client else None,
         user_agent=request.headers.get("user-agent"),
     )
-    response = RedirectResponse(url="/dashboard/", status_code=303)
+    dest = _resolve_post_login_redirect(result.redirect_to)
+    response = RedirectResponse(url=dest, status_code=303)
     set_session_cookie(response, session_id=session.id, settings=settings)
     return response
 

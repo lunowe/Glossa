@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}{{ tenant.name }} — Glossa{% endblock %}
+{% block content %}
+  <header>
+    <h1>{{ tenant.name }}</h1>
+    <small style="color: var(--pico-muted-color);">{{ tenant.id }} · plan: {{ tenant.plan.value }} · status: {{ tenant.status.value }}</small>
+  </header>
+  <article>
+    <p>Use the sidebar to manage members, invites, API keys, activity, and quotas.</p>
+    <p><a href="/dashboard/t/{{ tenant.id }}/members" role="button">Members</a>
+       <a href="/dashboard/t/{{ tenant.id }}/invites" role="button" class="secondary">Invites</a></p>
+  </article>
+{% endblock %}

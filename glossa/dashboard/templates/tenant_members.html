@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Members — {{ tenant.name }}{% endblock %}
+{% block content %}
+  <header>
+    <h1>Members of {{ tenant.name }}</h1>
+    <p><a href="/dashboard/t/{{ tenant.id }}/">← back to tenant</a></p>
+  </header>
+  <table>
+    <thead><tr><th>Name</th><th>Email</th><th>Role</th><th></th></tr></thead>
+    <tbody>
+      {% for row in rows %}
+        <tr>
+          <td>{{ row.user.name }}{% if row.is_self %} <em>(you)</em>{% endif %}</td>
+          <td>{{ row.user.email }}</td>
+          <td>
+            {% if can_manage and not row.is_self %}
+              <form method="post" action="/dashboard/t/{{ tenant.id }}/members/{{ row.member.id }}/role" style="margin:0;">
+                <select name="role" onchange="this.form.submit()">
+                  <option value="owner" {% if row.member.role.value == "owner" %}selected{% endif %}>owner</option>
+                  <option value="admin" {% if row.member.role.value == "admin" %}selected{% endif %}>admin</option>
+                  <option value="member" {% if row.member.role.value == "member" %}selected{% endif %}>member</option>
+                </select>
+              </form>
+            {% else %}
+              <span class="role-pill">{{ row.member.role.value }}</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if can_manage and not row.is_self %}
+              <form method="post" action="/dashboard/t/{{ tenant.id }}/members/{{ row.member.id }}/remove" style="margin:0;"
+                    onsubmit="return confirm('Remove {{ row.user.email }}?');">
+                <button class="secondary outline" type="submit">remove</button>
+              </form>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if can_manage %}
+    <p><a href="/dashboard/t/{{ tenant.id }}/invites" role="button">Manage invites →</a></p>
+  {% endif %}
+{% endblock %}

@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Invites — {{ tenant.name }}{% endblock %}
+{% block content %}
+  <header>
+    <h1>Invites for {{ tenant.name }}</h1>
+    <p><a href="/dashboard/t/{{ tenant.id }}/members">← back to members</a></p>
+  </header>
+
+  {% if can_manage %}
+    <article>
+      <header><strong>Create invite link</strong></header>
+      <form method="post" action="/dashboard/t/{{ tenant.id }}/invites">
+        <label>Role
+          <select name="role">
+            <option value="member" selected>member</option>
+            <option value="admin">admin</option>
+            <option value="owner">owner</option>
+          </select>
+        </label>
+        <label>Expires in (hours)
+          <input name="ttl_hours" type="number" min="1" max="720" value="168">
+        </label>
+        <button type="submit">Generate link</button>
+      </form>
+    </article>
+  {% endif %}
+
+  {% if invites %}
+    <table>
+      <thead><tr><th>Role</th><th>Link</th><th>Expires</th><th></th></tr></thead>
+      <tbody>
+        {% for invite in invites %}
+          <tr>
+            <td>{{ invite.role.value }}</td>
+            <td>
+              <code style="font-size: 0.8rem;">{{ base_url }}/dashboard/invites/accept/{{ invite.token }}</code>
+            </td>
+            <td>{{ invite.expires_at.strftime("%Y-%m-%d %H:%M UTC") }}</td>
+            <td>
+              {% if can_manage %}
+                <form method="post" action="/dashboard/t/{{ tenant.id }}/invites/{{ invite.id }}/revoke" style="margin:0;">
+                  <button class="secondary outline" type="submit">revoke</button>
+                </form>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p>No pending invites.</p>
+  {% endif %}
+{% endblock %}

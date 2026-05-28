@@ -29,6 +29,11 @@
               <hr>
               <ul>
                 <li><a href="/dashboard/">Tenants</a></li>
+                {% if current_tenant_id %}
+                  <li><a href="/dashboard/t/{{ current_tenant_id }}/">Overview</a></li>
+                  <li><a href="/dashboard/t/{{ current_tenant_id }}/members">Members</a></li>
+                  <li><a href="/dashboard/t/{{ current_tenant_id }}/invites">Invites</a></li>
+                {% endif %}
               </ul>
               <hr>
               <form action="/auth/logout" method="post" style="margin:0;">

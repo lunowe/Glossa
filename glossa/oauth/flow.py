@@ -30,6 +30,7 @@ class BeginResult:
 class CompleteResult:
     user: User
     is_new_user: bool
+    redirect_to: str | None = None
 
 
 def _pkce_pair() -> tuple[str, str]:
@@ -212,6 +213,9 @@ async def complete_oauth(
     if expires_at <= datetime.now(UTC):
         raise ValueError("state expired")
 
+    # Capture before delete; state is single-use
+    redirect_to = state.redirect_to
+
     # State is single-use
     await db.oauth_states.delete_one({"id": state_id})
 
@@ -237,4 +241,4 @@ async def complete_oauth(
     if is_new:
         await _ensure_initial_tenant(user)
 
-    return CompleteResult(user=user, is_new_user=is_new)
+    return CompleteResult(user=user, is_new_user=is_new, redirect_to=redirect_to)

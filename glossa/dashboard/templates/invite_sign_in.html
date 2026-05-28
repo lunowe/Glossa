@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Accept invite — Glossa{% endblock %}
+{% block layout %}
+  <article style="max-width: 28rem; margin: 4rem auto;">
+    <header>
+      <h1>You've been invited to join Glossa</h1>
+      <p>Sign in to accept this invite as a <strong>{{ invite_role }}</strong>.</p>
+    </header>
+    <a href="/auth/google/start?redirect_to={{ next | urlencode }}" role="button" style="width:100%; margin-block: 0.5rem;">
+      Continue with Google
+    </a>
+    <a href="/auth/github/start?redirect_to={{ next | urlencode }}" role="button" class="secondary" style="width:100%;">
+      Continue with GitHub
+    </a>
+  </article>
+{% endblock %}
