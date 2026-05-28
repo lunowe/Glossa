@@ -6,6 +6,7 @@ from glossa import __version__
 from glossa.activity.middleware import ActivityMiddleware
 from glossa.auth import get_auth_context
 from glossa.config import get_settings
+from glossa.dashboard import routes as dashboard_routes
 from glossa.db.client import close_db, init_db
 from glossa.oauth import register_default_strategies
 from glossa.routes import activity, admin, api_keys, auth, jobs, lint, pages, query, sources, spaces, usage, webhooks
@@ -49,6 +50,7 @@ app.include_router(api_keys.router, dependencies=_auth)
 app.include_router(activity.router, dependencies=_auth)
 
 app.include_router(auth.router)
+app.include_router(dashboard_routes.router)
 
 
 @app.get("/healthz", tags=["meta"])

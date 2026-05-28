@@ -3,6 +3,9 @@ name = "glossa"
 version = "0.1.0"
 description = "LLM-maintained wikis as a service. Markdown is the contract."
 requires-python = ">=3.12"
+dependencies = [
+    "jinja2>=3.1",
+]
 
 [project.scripts]
 glossa-mcp = "glossa.mcp.server:main"

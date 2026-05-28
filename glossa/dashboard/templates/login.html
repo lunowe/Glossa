@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Glossa — Sign in{% endblock %}
+{% block layout %}
+  <article style="max-width: 28rem; margin: 4rem auto;">
+    <header>
+      <h1>Glossa</h1>
+      <p>LLM-maintained wikis as a service.</p>
+    </header>
+    <p>Sign in to manage tenants, API keys, activity, and quotas.</p>
+    <a href="/auth/google/start" role="button" style="width:100%; margin-block: 0.5rem;">
+      Continue with Google
+    </a>
+    <a href="/auth/github/start" role="button" class="secondary" style="width:100%;">
+      Continue with GitHub
+    </a>
+    <footer style="margin-top: 1.5rem; font-size: 0.875rem; color: var(--pico-muted-color);">
+      No account? Signing in creates one and a free starter workspace.
+    </footer>
+  </article>
+{% endblock %}

@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{% block title %}Glossa{% endblock %}</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <script src="https://unpkg.com/htmx.org@2.0.3"></script>
+  <style>
+    body { padding-block: 2rem; }
+    .layout { display: grid; grid-template-columns: 220px 1fr; gap: 2rem; }
+    .sidebar { border-right: 1px solid var(--pico-muted-border-color); padding-right: 1rem; }
+    .sidebar ul { list-style: none; padding: 0; }
+    .sidebar li { margin-block: 0.25rem; }
+    .sidebar a { text-decoration: none; }
+    .role-pill { font-size: 0.75rem; padding: 0.15rem 0.5rem; border-radius: 999px;
+                 background: var(--pico-muted-background-color); }
+  </style>
+</head>
+<body>
+  <main class="container">
+    {% block layout %}
+      <div class="layout">
+        {% block sidebar %}
+          <nav class="sidebar">
+            {% if user %}
+              <strong>{{ user.name }}</strong>
+              <small style="display:block; color: var(--pico-muted-color);">{{ user.email }}</small>
+              <hr>
+              <ul>
+                <li><a href="/dashboard/">Tenants</a></li>
+              </ul>
+              <hr>
+              <form action="/auth/logout" method="post" style="margin:0;">
+                <button type="submit" class="secondary outline">Log out</button>
+              </form>
+            {% endif %}
+          </nav>
+        {% endblock %}
+        <section>
+          {% block content %}{% endblock %}
+        </section>
+      </div>
+    {% endblock %}
+  </main>
+</body>
+</html>

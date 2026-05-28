@@ -8,5 +8,6 @@ pymongo
 minio
 pyyaml
 python-multipart
+jinja2>=3.1
 anthropic>=0.92.0
 mcp>=1.27.1

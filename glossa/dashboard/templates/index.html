@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Glossa — Tenants{% endblock %}
+{% block content %}
+  <header>
+    <h1>Your tenants</h1>
+    <p>Pick one to manage spaces, keys, activity, and quotas.</p>
+  </header>
+  {% if rows %}
+    <ul>
+      {% for row in rows %}
+        <li>
+          <a href="/dashboard/t/{{ row.tenant.id }}/">
+            <strong>{{ row.tenant.name }}</strong>
+          </a>
+          <span class="role-pill">{{ row.role.value }}</span>
+          <small style="display:block; color: var(--pico-muted-color);">{{ row.tenant.id }}</small>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <article>
+      <p>You don't belong to any tenant yet. This usually means signup is still in flight — try refreshing.</p>
+    </article>
+  {% endif %}
+{% endblock %}
