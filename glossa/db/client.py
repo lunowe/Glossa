@@ -65,3 +65,24 @@ async def _create_indexes(db: AsyncIOMotorDatabase) -> None:
         expireAfterSeconds=7776000,
     )
     await db.request_events.create_index([("tenant_id", 1), ("created_at", -1)])
+
+    await db.users.create_index("id", unique=True)
+    await db.users.create_index("email", unique=True)
+    await db.users.create_index("oauth_accounts.provider_user_id")
+
+    await db.tenant_members.create_index("id", unique=True)
+    await db.tenant_members.create_index([("tenant_id", 1), ("user_id", 1)], unique=True)
+    await db.tenant_members.create_index("user_id")  # list-my-tenants query
+
+    await db.sessions.create_index("id", unique=True)
+    await db.sessions.create_index("user_id")
+    # TTL: sessions auto-prune at expires_at
+    await db.sessions.create_index("expires_at", expireAfterSeconds=0)
+
+    await db.oauth_states.create_index("id", unique=True)
+    # TTL: states auto-prune at expires_at
+    await db.oauth_states.create_index("expires_at", expireAfterSeconds=0)
+
+    await db.invites.create_index("id", unique=True)
+    await db.invites.create_index("token", unique=True)
+    await db.invites.create_index("tenant_id")
