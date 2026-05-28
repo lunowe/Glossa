@@ -20,12 +20,19 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
+from glossa.activity.aggregator import list_recent_events, summarize
 from glossa.dashboard.access import (
     count_owners,
     require_admin_membership,
     require_membership,
 )
 from glossa.db.client import get_db
+from glossa.models.api_key import (
+    DEFAULT_SCOPES,
+    ApiKey,
+    Scope,
+    generate_key,
+)
 from glossa.models.membership import (
     Invite,
     TenantMember,
@@ -33,6 +40,8 @@ from glossa.models.membership import (
 )
 from glossa.models.tenant import Tenant
 from glossa.sessions import SessionContext, get_session_user, require_session
+from glossa.usage.models import TenantQuotaUpdate
+from glossa.usage.quota import get_quota, get_quota_status, upsert_quota
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -344,3 +353,215 @@ async def invite_accept(
         )
     await db.invites.update_one({"id": invite.id}, {"$set": {"accepted_at": now}})
     return RedirectResponse(url=f"/dashboard/t/{invite.tenant_id}/", status_code=303)
+
+
+# --- API keys ------------------------------------------------------------------
+
+
+@router.get("/t/{tenant_id}/keys", response_class=HTMLResponse, include_in_schema=False)
+async def tenant_keys(
+    tenant_id: str,
+    request: Request,
+    ctx: Annotated[SessionContext, Depends(require_session)],
+    new_plaintext: str | None = None,
+    new_prefix: str | None = None,
+) -> HTMLResponse:
+    member = await require_membership(tenant_id, ctx)
+    db = get_db()
+    tenant = Tenant.model_validate(await db.tenants.find_one({"id": tenant_id}))
+    keys = [
+        ApiKey.model_validate(doc) async for doc in db.api_keys.find({"tenant_id": tenant_id}).sort("created_at", -1)
+    ]
+    return templates.TemplateResponse(
+        request,
+        "tenant_keys.html",
+        {
+            "user": ctx.user,
+            "tenant": tenant,
+            "keys": keys,
+            "can_manage": member.role in (TenantRole.OWNER, TenantRole.ADMIN),
+            "current_tenant_id": tenant_id,
+            "current_role": member.role,
+            "new_plaintext": new_plaintext,
+            "new_prefix": new_prefix,
+            "all_scopes": list(Scope),
+            "default_scopes": list(DEFAULT_SCOPES),
+        },
+    )
+
+
+@router.post("/t/{tenant_id}/keys", response_class=HTMLResponse, include_in_schema=False)
+async def issue_dashboard_key(
+    tenant_id: str,
+    request: Request,
+    ctx: Annotated[SessionContext, Depends(require_session)],
+) -> RedirectResponse:
+    await require_admin_membership(tenant_id, ctx)
+    form = await request.form()
+    label = (form.get("label") or "").strip() or None
+    scope_values = form.getlist("scopes")
+    if scope_values:
+        try:
+            scopes = [Scope(s) for s in scope_values]
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail="invalid scope") from e
+    else:
+        scopes = list(DEFAULT_SCOPES)
+
+    plaintext, prefix, hashed = generate_key()
+    api_key = ApiKey(
+        id=f"key_{uuid4().hex[:12]}",
+        tenant_id=tenant_id,
+        hashed_key=hashed,
+        prefix=prefix,
+        label=label,
+        scopes=scopes,
+        created_at=datetime.now(UTC),
+    )
+    await get_db().api_keys.insert_one(api_key.model_dump())
+    # PRG: redirect to keys page, passing plaintext via query string so it
+    # appears exactly once on next render. The query param is short-lived
+    # (only on this redirect), no PII leak.
+    return RedirectResponse(
+        url=f"/dashboard/t/{tenant_id}/keys?new_plaintext={plaintext}&new_prefix={prefix}",
+        status_code=303,
+    )
+
+
+@router.post(
+    "/t/{tenant_id}/keys/{key_id}/revoke",
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+async def revoke_dashboard_key(
+    tenant_id: str,
+    key_id: str,
+    request: Request,
+    ctx: Annotated[SessionContext, Depends(require_session)],
+) -> RedirectResponse:
+    await require_admin_membership(tenant_id, ctx)
+    await get_db().api_keys.update_one(
+        {"id": key_id, "tenant_id": tenant_id, "revoked_at": None},
+        {"$set": {"revoked_at": datetime.now(UTC)}},
+    )
+    return RedirectResponse(url=f"/dashboard/t/{tenant_id}/keys", status_code=303)
+
+
+# --- Activity ------------------------------------------------------------------
+
+
+@router.get("/t/{tenant_id}/activity", response_class=HTMLResponse, include_in_schema=False)
+async def tenant_activity(
+    tenant_id: str,
+    request: Request,
+    ctx: Annotated[SessionContext, Depends(require_session)],
+    hours: int = 24,
+    method: str | None = None,
+    path_prefix: str | None = None,
+    status_min: int | None = None,
+    limit: int = 50,
+) -> HTMLResponse:
+    member = await require_membership(tenant_id, ctx)
+    db = get_db()
+    tenant = Tenant.model_validate(await db.tenants.find_one({"id": tenant_id}))
+    summary = await summarize(tenant_id, hours=hours)
+    events = await list_recent_events(
+        tenant_id,
+        method=method,
+        path_prefix=path_prefix,
+        status_min=status_min,
+        limit=limit,
+    )
+    return templates.TemplateResponse(
+        request,
+        "tenant_activity.html",
+        {
+            "user": ctx.user,
+            "tenant": tenant,
+            "summary": summary,
+            "events": events,
+            "hours": hours,
+            "method": method or "",
+            "path_prefix": path_prefix or "",
+            "status_min": status_min,
+            "current_tenant_id": tenant_id,
+            "current_role": member.role,
+        },
+    )
+
+
+# --- Quotas --------------------------------------------------------------------
+
+
+@router.get("/t/{tenant_id}/quotas", response_class=HTMLResponse, include_in_schema=False)
+async def tenant_quotas(
+    tenant_id: str,
+    request: Request,
+    ctx: Annotated[SessionContext, Depends(require_session)],
+) -> HTMLResponse:
+    member = await require_membership(tenant_id, ctx)
+    db = get_db()
+    tenant = Tenant.model_validate(await db.tenants.find_one({"id": tenant_id}))
+    quota = await get_quota(tenant_id)
+    status_ = await get_quota_status(tenant_id)
+    return templates.TemplateResponse(
+        request,
+        "tenant_quotas.html",
+        {
+            "user": ctx.user,
+            "tenant": tenant,
+            "quota": quota,
+            "status": status_,
+            "can_manage": member.role in (TenantRole.OWNER, TenantRole.ADMIN),
+            "current_tenant_id": tenant_id,
+            "current_role": member.role,
+        },
+    )
+
+
+@router.post("/t/{tenant_id}/quotas", response_class=HTMLResponse, include_in_schema=False)
+async def update_quotas(
+    tenant_id: str,
+    request: Request,
+    ctx: Annotated[SessionContext, Depends(require_session)],
+) -> RedirectResponse:
+    await require_admin_membership(tenant_id, ctx)
+    form = await request.form()
+
+    def _int(name: str) -> int | None:
+        raw = form.get(name)
+        if raw is None or str(raw).strip() == "":
+            return None
+        try:
+            return int(raw)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"invalid {name}") from e
+
+    def _float(name: str) -> float | None:
+        raw = form.get(name)
+        if raw is None or str(raw).strip() == "":
+            return None
+        try:
+            return float(raw)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"invalid {name}") from e
+
+    update = TenantQuotaUpdate(
+        monthly_cost_limit_usd=_float("monthly_cost_limit_usd"),
+        monthly_token_limit=_int("monthly_token_limit"),
+        max_sources_per_space=_int("max_sources_per_space"),
+        max_storage_bytes=_int("max_storage_bytes"),
+        max_requests_per_minute=_int("max_requests_per_minute"),
+    )
+
+    await upsert_quota(
+        tenant_id=tenant_id,
+        monthly_cost_limit_usd=update.monthly_cost_limit_usd,
+        monthly_token_limit=update.monthly_token_limit,
+        allowed_models=None,
+        max_sources_per_space=update.max_sources_per_space,
+        max_storage_bytes=update.max_storage_bytes,
+        max_requests_per_minute=update.max_requests_per_minute,
+        notes=None,
+    )
+    return RedirectResponse(url=f"/dashboard/t/{tenant_id}/quotas", status_code=303)

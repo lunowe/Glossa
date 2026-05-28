@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}API keys — {{ tenant.name }}{% endblock %}
+{% block content %}
+  <header>
+    <h1>API keys</h1>
+    <p><a href="/dashboard/t/{{ tenant.id }}/">← back to {{ tenant.name }}</a></p>
+  </header>
+
+  {% if new_plaintext %}
+    <article style="border-left: 4px solid var(--pico-primary); background: var(--pico-card-background-color);">
+      <header><strong>Save this key now — it's shown only once</strong></header>
+      <p><code style="user-select: all; word-break: break-all;">{{ new_plaintext }}</code></p>
+      <small>Stored hash starts with <code>{{ new_prefix }}</code>. Glossa keeps only the SHA-256.</small>
+    </article>
+  {% endif %}
+
+  {% if can_manage %}
+    <article>
+      <header><strong>Issue a new key</strong></header>
+      <form method="post" action="/dashboard/t/{{ tenant.id }}/keys">
+        <label>Label (optional)
+          <input name="label" type="text" placeholder="e.g. production / staging">
+        </label>
+        <fieldset>
+          <legend>Scopes</legend>
+          {% for scope in all_scopes %}
+            <label>
+              <input type="checkbox" name="scopes" value="{{ scope.value }}"
+                     {% if scope in default_scopes %}checked{% endif %}>
+              {{ scope.value }}
+            </label>
+          {% endfor %}
+        </fieldset>
+        <button type="submit">Issue key</button>
+      </form>
+    </article>
+  {% endif %}
+
+  {% if keys %}
+    <table>
+      <thead><tr><th>Label</th><th>Prefix</th><th>Scopes</th><th>Created</th><th>Last used</th><th>Status</th><th></th></tr></thead>
+      <tbody>
+        {% for k in keys %}
+          <tr {% if k.revoked_at %}style="opacity: 0.55;"{% endif %}>
+            <td>{{ k.label or "—" }}</td>
+            <td><code>{{ k.prefix }}…</code></td>
+            <td><small>{{ k.scopes | map(attribute="value") | join(", ") }}</small></td>
+            <td><small>{{ k.created_at.strftime("%Y-%m-%d") }}</small></td>
+            <td><small>{% if k.last_used_at %}{{ k.last_used_at.strftime("%Y-%m-%d %H:%M") }}{% else %}never{% endif %}</small></td>
+            <td>
+              {% if k.revoked_at %}<span class="role-pill">revoked</span>
+              {% else %}<span class="role-pill" style="background: rgba(0,200,0,0.2);">active</span>{% endif %}
+            </td>
+            <td>
+              {% if can_manage and not k.revoked_at %}
+                <form method="post" action="/dashboard/t/{{ tenant.id }}/keys/{{ k.id }}/revoke" style="margin:0;"
+                      onsubmit="return confirm('Revoke this key? Any client using it will get 401 immediately.');">
+                  <button class="secondary outline" type="submit">revoke</button>
+                </form>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p>No API keys yet.</p>
+  {% endif %}
+{% endblock %}

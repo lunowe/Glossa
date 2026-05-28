@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Activity — {{ tenant.name }}{% endblock %}
+{% block content %}
+  <header>
+    <h1>Activity</h1>
+    <p><a href="/dashboard/t/{{ tenant.id }}/">← back to {{ tenant.name }}</a></p>
+  </header>
+
+  <article>
+    <header><strong>Last {{ hours }}h</strong></header>
+    <div class="grid">
+      <div><small>Requests</small><br><strong>{{ summary.request_count }}</strong></div>
+      <div><small>5xx errors</small><br><strong>{{ summary.error_count }}</strong></div>
+      <div><small>Avg duration (ms)</small><br><strong>{{ "%.1f"|format(summary.avg_duration_ms) }}</strong></div>
+    </div>
+    {% if summary.by_status %}
+      <p><small>By status:</small>
+        {% for code, n in summary.by_status.items() %}
+          <span class="role-pill">{{ code }}: {{ n }}</span>
+        {% endfor %}
+      </p>
+    {% endif %}
+  </article>
+
+  <form method="get" action="/dashboard/t/{{ tenant.id }}/activity" style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: end;">
+    <label>Hours <input name="hours" type="number" min="1" max="720" value="{{ hours }}" style="width: 6rem;"></label>
+    <label>Method <input name="method" value="{{ method }}" placeholder="GET" style="width: 6rem;"></label>
+    <label>Path prefix <input name="path_prefix" value="{{ path_prefix }}" placeholder="/spaces" style="width: 12rem;"></label>
+    <label>Min status <input name="status_min" type="number" value="{{ status_min or '' }}" style="width: 6rem;"></label>
+    <button type="submit">Filter</button>
+  </form>
+
+  <h3>Recent events</h3>
+  {% if events %}
+    <table>
+      <thead><tr><th>Time</th><th>Method</th><th>Path</th><th>Status</th><th>Duration</th><th>Key</th></tr></thead>
+      <tbody>
+        {% for e in events %}
+          <tr {% if e.status_code >= 500 %}style="color: var(--pico-color-red-500);"{% endif %}>
+            <td><small>{{ e.created_at.strftime("%H:%M:%S") }}</small></td>
+            <td><code>{{ e.method }}</code></td>
+            <td><code>{{ e.path }}</code></td>
+            <td>{{ e.status_code }}</td>
+            <td>{{ e.duration_ms }} ms</td>
+            <td><small>{% if e.api_key_id %}{{ e.api_key_id }}{% else %}—{% endif %}</small></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p>No events match these filters.</p>
+  {% endif %}
+{% endblock %}
