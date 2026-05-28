@@ -171,6 +171,105 @@ default. Existing local tooling (the MCP server, the Obsidian sync) all
 keep working with no token configured. Set `GLOSSA_AUTH_REQUIRED=true`
 and issue real keys to flip on tenant enforcement.
 
+The dashboard surface (`/dashboard/`) is the recommended way to manage
+keys / activity / quotas once you have a real user. See
+[Dashboard](#dashboard) below.
+
+## Dashboard
+
+A browser dashboard lives at `/dashboard/` for humans. Authentication is
+session-based (HttpOnly cookie) — distinct from API-key auth, which the
+API surface keeps using.
+
+### Sign-in
+
+Users sign in via OAuth federation: **Google** or **GitHub**. There is
+no self-IdP (no email + password). On first sign-in:
+
+- A `User` row is created with the provider's email + name.
+- A starter tenant is auto-created (`"{name}'s Workspace"`).
+- The user becomes that tenant's `owner`.
+
+If a user signs in with Google then later with GitHub using the same
+email address, the two `OAuthAccount`s link to the same `User`.
+
+### What you can do from the dashboard
+
+| Path | What |
+|---|---|
+| `/dashboard/` | List your tenants (with role pills) |
+| `/dashboard/t/{tid}/` | Tenant overview |
+| `/dashboard/t/{tid}/members` | List + add/remove members + role change |
+| `/dashboard/t/{tid}/invites` | Generate token-link invites (admin/owner only) |
+| `/dashboard/t/{tid}/keys` | Issue / revoke API keys — plaintext shown once at issuance |
+| `/dashboard/t/{tid}/activity` | Recent requests + 24h summary, filterable |
+| `/dashboard/t/{tid}/quotas` | Live gauges for all six quota dimensions + update form |
+| `/dashboard/invites/accept/{token}` | Accept an invite — public landing |
+
+### Roles
+
+| Role | Can manage members / keys / quotas? | Can use API? |
+|---|---|---|
+| owner | yes (and only owners can demote / remove other owners) | yes |
+| admin | yes | yes |
+| member | no — read-only on the dashboard | yes |
+
+You cannot demote or remove the **sole** owner of a tenant — promote
+someone else first.
+
+### Inviting people
+
+Admins or owners go to `/dashboard/t/{tid}/invites`, pick a role and an
+expiry (1h–30d), and get a share URL of the shape:
+
+```
+https://glossa.example.com/dashboard/invites/accept/<token>
+```
+
+Share it via your channel of choice (no email is sent — there's no SMTP
+plumbing). The link is single-use; an `accepted_at` timestamp marks it
+consumed. Pending invites can be revoked from the same page.
+
+### Environment
+
+Add to your `.env`:
+
+```
+GLOSSA_BASE_URL=https://glossa.example.com         # required for OAuth redirect URIs
+GLOSSA_SESSION_COOKIE_NAME=glossa_session          # default
+GLOSSA_SESSION_TTL_HOURS=168                       # 7 days, default
+GLOSSA_SESSION_COOKIE_SECURE=true                  # required in production behind HTTPS
+GLOSSA_GOOGLE_OAUTH_CLIENT_ID=...
+GLOSSA_GOOGLE_OAUTH_CLIENT_SECRET=...
+GLOSSA_GITHUB_OAUTH_CLIENT_ID=...
+GLOSSA_GITHUB_OAUTH_CLIENT_SECRET=...
+GLOSSA_OAUTH_STATE_TTL_MINUTES=10                  # default
+```
+
+Provider callback URLs to register with each IdP:
+
+- Google: `${GLOSSA_BASE_URL}/auth/google/callback`
+- GitHub: `${GLOSSA_BASE_URL}/auth/github/callback`
+
+### Self-hosting
+
+The dashboard works without any OAuth credentials in `auth_required=false`
+mode — but the only way in is the bootstrap admin path against the API:
+no human sign-in is available, no humans can issue keys. That's fine for
+local dev. For real deployments, set the four OAuth credentials and
+`GLOSSA_AUTH_REQUIRED=true`, register a first user via OAuth, and let
+them issue keys from the dashboard.
+
+### Architecture
+
+| | |
+|---|---|
+| **Sessions** | DB-backed (`sessions` collection, TTL-indexed). Cookie value IS the session id. HttpOnly, SameSite=Lax, Secure when configured. |
+| **State** | `oauth_states` collection holds PKCE verifier + CSRF nonce, TTL-pruned at expires_at (10 min). State is single-use — deleted before token exchange so a failed exchange still consumes it. |
+| **Templates** | Jinja2, server-rendered. Pico.css + HTMX from CDN. No JS toolchain. |
+| **Authorization** | `require_session` for any signed-in user; `require_membership(tid)` for tenant pages (404 if not a member); `require_admin_membership(tid)` for mutations. |
+| **Open-redirect defense** | The OAuth `redirect_to` query param is honored only for paths starting with `/` and containing no `://`. |
+
 ## Bucket layout
 
 ```
@@ -397,7 +496,8 @@ v0.1 functional MVP. **Implemented:**
 - In-process background task runner with per-space serialisation
 - Hosted multi-tenant auth (`glsk_live_*` API keys, tenant scoping with 404-on-cross-tenant, activity tracking, Stripe-style webhook signatures)
 - Per-tenant quotas across six dimensions (cost, tokens, sources/space, storage bytes, requests/minute, model whitelist)
-- 227 tests covering frontmatter, JSON parsing, slugging, end-to-end ingest, end-to-end query, end-to-end lint, MCP client + server wiring, auth + tenant isolation, admin + key issuance, activity middleware, webhook signing, quota extensions
+- Browser dashboard with Google + GitHub OAuth, multi-user tenants, token-link invites, role-based access (owner/admin/member), in-app key issuance/revoke, activity views, and quota gauges
+- 350+ tests covering frontmatter, JSON parsing, slugging, end-to-end ingest, end-to-end query, end-to-end lint, MCP client + server wiring, auth + tenant isolation, admin + key issuance, activity middleware, webhook signing, quota extensions, OAuth + sessions, dashboard views, and the full sign-up → key-issued → API-call e2e flow
 
 **Not implemented yet:**
 
