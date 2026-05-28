@@ -15,6 +15,11 @@ class Settings(BaseSettings):
 
     api_host: str = "0.0.0.0"
     api_port: int = 8200
+    base_url: str = "http://localhost:8200"  # used by D-Phase 3 for OAuth redirect URIs; harmless here
+
+    session_cookie_name: str = "glossa_session"
+    session_ttl_hours: int = 168  # 7 days
+    session_cookie_secure: bool = False  # set true in production behind https; SameSite=Lax + Secure
 
     default_llm_mode: str = "byo"
     default_llm_endpoint: str | None = None
