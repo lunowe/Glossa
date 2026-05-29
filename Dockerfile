@@ -9,4 +9,4 @@ COPY glossa/ ./glossa/
 
 EXPOSE 8200
 
-CMD ["uvicorn", "glossa.main:app", "--host", "0.0.0.0", "--port", "8200"]
+CMD ["sh", "-c", "uvicorn glossa.main:app --host 0.0.0.0 --port ${PORT:-8200}"]
