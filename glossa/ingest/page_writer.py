@@ -9,13 +9,9 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from glossa.db.client import get_db
-from glossa.ingest.extract import ExtractedEntity
-from glossa.ingest.prompts import SYSTEM_INGEST_UPDATE_PAGE, update_page_user_prompt
-from glossa.llm.base import LLMDriver, LLMMessage
 from glossa.models.page import Page, PageKind
 from glossa.usage.quota import check_storage_quota_before_write
 from glossa.utils import frontmatter
-from glossa.utils.json_parse import LLMJSONError, parse
 
 if TYPE_CHECKING:
     from glossa.storage.base import StorageBackend
@@ -89,44 +85,6 @@ async def upsert_page(
         upsert=True,
     )
     return is_new, is_changed
-
-
-async def llm_update_entity_page(
-    *,
-    llm: LLMDriver,
-    schema_markdown: str,
-    entity: ExtractedEntity,
-    existing_page_markdown: str | None,
-    source_id: str,
-    source_title: str,
-    source_summary_markdown: str,
-) -> tuple[dict, dict]:
-    """Returns ``(update_dict, usage_dict)``.
-
-    The usage dict is the raw provider response so the caller can record it.
-    """
-    user_prompt = update_page_user_prompt(
-        schema_markdown=schema_markdown,
-        entity_type=entity.type,
-        entity_title=entity.title,
-        page_path=entity.page_path,
-        existing_page_markdown=existing_page_markdown,
-        source_id=source_id,
-        source_title=source_title,
-        source_summary_markdown=source_summary_markdown,
-        entity_relevance=entity.relevance,
-    )
-    response = await llm.chat(
-        [
-            LLMMessage(role="system", content=SYSTEM_INGEST_UPDATE_PAGE),
-            LLMMessage(role="user", content=user_prompt),
-        ],
-        temperature=0.2,
-    )
-    data = parse(response.content)
-    if not isinstance(data, dict) or "new_content" not in data:
-        raise LLMJSONError("update_page step expected {new_content, is_changed, change_summary}")
-    return data, dict(response.usage or {})
 
 
 def build_summary_page(

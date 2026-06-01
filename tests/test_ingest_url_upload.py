@@ -2,6 +2,7 @@
 
 The actual network fetch (trafilatura) and document parser (LiteParse) are
 monkeypatched — these tests exercise the wiring, not the third-party parsers.
+The LLM agents are driven with Pydantic AI test models via ``agent.override``.
 """
 
 import json
@@ -10,17 +11,20 @@ from datetime import UTC, datetime
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
+from pydantic_ai.messages import ModelResponse, ToolCallPart, ToolReturnPart
+from pydantic_ai.models.function import FunctionModel
+from pydantic_ai.models.test import TestModel
 
 from glossa.config import Settings
 from glossa.db.client import get_db
 from glossa.ingest import doc_parser, source_fetcher, url_fetcher
+from glossa.ingest.agents import extract_agent, maintainer_agent
 from glossa.ingest.workflow import run_ingest
 from glossa.main import app
 from glossa.models.job import Job, JobKind, JobStatus
 from glossa.models.source import Source, SourceCreate, SourceIngestionMode, SourceStatus
 from glossa.models.space import Space
 from glossa.storage.memory import InMemoryStorageBackend
-from tests.fake_llm import FakeLLMDriver
 
 
 async def _seed_space(storage, *, space_id="gls_test", tenant_id="t1"):
@@ -40,35 +44,49 @@ async def _seed_space(storage, *, space_id="gls_test", tenant_id="t1"):
     return space
 
 
-def _extract_response(entities, summary, blurb):
-    return json.dumps({"entities": entities, "source_summary_markdown": summary, "log_blurb": blurb})
-
-
-def _update_page_response(content):
-    return json.dumps({"new_content": content, "is_changed": True, "change_summary": "x"})
-
-
-def _entity_pipeline_llm():
-    """A FakeLLMDriver scripted for: one extract call + one entity page update."""
-    extract = _extract_response(
-        entities=[
-            {
-                "type": "company",
-                "title": "Allianz",
-                "slug": "allianz",
-                "page_path": "entities/company/allianz",
-                "relevance": "from the fetched/parsed content",
-            }
-        ],
-        summary="# Summary\n\nAllianz appears in the source.",
-        blurb="ingested",
+def _allianz_extract_model():
+    return TestModel(
+        custom_output_args={
+            "entities": [
+                {
+                    "type": "company",
+                    "title": "Allianz",
+                    "slug": "allianz",
+                    "page_path": "entities/company/allianz",
+                    "relevance": "from the fetched/parsed content",
+                }
+            ],
+            "source_summary_markdown": "# Summary\n\nAllianz appears in the source.",
+            "log_blurb": "ingested",
+        },
+        call_tools=[],
     )
-    page = (
-        "---\nkind: entity\nentity_type: company\ntitle: Allianz\n"
-        "source_refs: [src_x]\nupdated_at: 2026-05-13T12:00:00Z\n---\n\n"
-        "# Allianz\n\nFrom the source ([[summaries/src-src_x]])."
-    )
-    return FakeLLMDriver([extract, _update_page_response(page)])
+
+
+def _allianz_maintainer_model():
+    """FunctionModel: create the Allianz entity page once, then finish."""
+
+    def fn(messages, info):
+        already_called = any(isinstance(p, ToolReturnPart) for m in messages for p in getattr(m, "parts", []))
+        if not already_called:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="create_page",
+                        args={
+                            "path": "entities/company/allianz",
+                            "kind": "entity",
+                            "title": "Allianz",
+                            "body": "# Allianz\n\nFrom the source ([[summaries/src-src_x]]).",
+                        },
+                    )
+                ]
+            )
+        return ModelResponse(
+            parts=[ToolCallPart(tool_name=info.output_tools[0].name, args={"log_blurb": "ingested", "notes": ""})]
+        )
+
+    return FunctionModel(fn)
 
 
 # --- Model validation -----------------------------------------------------------
@@ -146,14 +164,13 @@ async def test_url_ingest_fetches_and_builds_pages(storage, settings, monkeypatc
 
     monkeypatch.setattr(url_fetcher, "fetch_url_as_markdown", fake_fetch)
 
-    result = await run_ingest(
-        job_id=job.id,
-        space_id=space.id,
-        source_id=src.id,
-        storage=storage,
-        settings=settings,
-        llm=_entity_pipeline_llm(),
-    )
+    with (
+        extract_agent.override(model=_allianz_extract_model()),
+        maintainer_agent.override(model=_allianz_maintainer_model()),
+    ):
+        result = await run_ingest(
+            job_id=job.id, space_id=space.id, source_id=src.id, storage=storage, settings=settings
+        )
 
     assert captured["url"] == "https://example.com/article"
     assert "entities/company/allianz" in result.pages_created
@@ -201,14 +218,13 @@ async def test_upload_ingest_parses_asset_and_builds_pages(storage, settings, mo
 
     monkeypatch.setattr(doc_parser, "parse_asset_to_text", fake_parse)
 
-    result = await run_ingest(
-        job_id=job.id,
-        space_id=space.id,
-        source_id=src.id,
-        storage=storage,
-        settings=settings,
-        llm=_entity_pipeline_llm(),
-    )
+    with (
+        extract_agent.override(model=_allianz_extract_model()),
+        maintainer_agent.override(model=_allianz_maintainer_model()),
+    ):
+        result = await run_ingest(
+            job_id=job.id, space_id=space.id, source_id=src.id, storage=storage, settings=settings
+        )
 
     assert captured["data"] == b"%PDF-1.7 raw bytes"
     assert captured["filename"] == "report.pdf"
@@ -238,15 +254,9 @@ async def test_upload_missing_asset_fails_ingest(storage, settings):
     )
     await db.jobs.insert_one(job.model_dump())
 
+    # The fetch fails before any LLM call, so no agent override is needed.
     with pytest.raises(source_fetcher.SourceFetchError, match="asset missing"):
-        await run_ingest(
-            job_id=job.id,
-            space_id=space.id,
-            source_id=src.id,
-            storage=storage,
-            settings=settings,
-            llm=FakeLLMDriver([]),
-        )
+        await run_ingest(job_id=job.id, space_id=space.id, source_id=src.id, storage=storage, settings=settings)
 
 
 # --- HTTP upload endpoint -------------------------------------------------------

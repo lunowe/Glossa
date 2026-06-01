@@ -10,10 +10,19 @@ class LLMMode(StrEnum):
 
 
 class LLMConfig(BaseModel):
-    mode: LLMMode = LLMMode.BYO
-    endpoint: str | None = None
+    # Provider-agnostic config (preferred). ``provider`` maps to a Pydantic AI
+    # provider ("openai", "anthropic", "google", "groq", ...); ``base_url`` is for
+    # OpenAI-compatible endpoints. Resolution precedence lives in
+    # ``glossa.llm.build_model``.
+    provider: str | None = None
+    base_url: str | None = None
     model: str | None = None
     api_key_ref: str | None = None
+    # Back-compat: legacy two-mode config. ``mode=byo`` -> openai-compatible at
+    # ``endpoint``/``base_url``; ``mode=hosted`` -> anthropic. Used only when
+    # ``provider`` is unset.
+    mode: LLMMode = LLMMode.BYO
+    endpoint: str | None = None
     extra: dict = Field(default_factory=dict)
 
 

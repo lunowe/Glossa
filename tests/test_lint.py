@@ -3,17 +3,19 @@
 Covers:
 - ``extract_wikilinks`` pure-function semantics (suffix/prefix stripping, alt/anchor)
 - ``scan_deterministic`` orphan + broken-link detection
-- End-to-end ``run_lint`` with a fake LLM:
+- End-to-end ``run_lint`` with Pydantic AI TestModel overrides:
   - clean wiki (no findings)
   - orphan + broken link findings only (no LLM call)
   - one page with two sources → LLM contradiction finding recorded
 """
 
-import json
 from datetime import UTC, datetime
+
+from pydantic_ai.models.test import TestModel
 
 from glossa.db.client import get_db
 from glossa.lint import scanner
+from glossa.lint.contradictions import contradictions_agent
 from glossa.lint.workflow import run_lint
 from glossa.models.job import Job, JobKind, JobStatus
 from glossa.models.page import Page, PageKind
@@ -21,7 +23,6 @@ from glossa.models.source import Source, SourceIngestionMode
 from glossa.models.space import Space
 from glossa.models.webhook import WebhookEvent
 from glossa.usage.models import Operation
-from tests.fake_llm import FakeLLMDriver
 
 # ---------- pure-function tests ----------
 
@@ -193,18 +194,16 @@ async def test_lint_clean_wiki_produces_no_findings(storage, settings):
     job = _new_job(space.id)
     await db.jobs.insert_one(job.model_dump())
 
-    llm = FakeLLMDriver([])
+    # No page has ≥2 sources, so the contradiction agent is never called.
     result = await run_lint(
         job_id=job.id,
         space_id=space.id,
         storage=storage,
         settings=settings,
-        llm=llm,
     )
 
     assert result.lint_findings == []
     assert result.lint_summary == {}
-    assert llm.calls == []
 
     job_doc = await db.jobs.find_one({"id": job.id})
     assert job_doc["status"] == JobStatus.SUCCEEDED.value
@@ -237,19 +236,17 @@ async def test_lint_flags_orphan_and_broken_link_without_llm(storage, settings):
     job = _new_job(space.id)
     await db.jobs.insert_one(job.model_dump())
 
-    llm = FakeLLMDriver([])
+    # No page has ≥2 sources, so the contradiction agent is never called.
     result = await run_lint(
         job_id=job.id,
         space_id=space.id,
         storage=storage,
         settings=settings,
-        llm=llm,
     )
 
     categories = sorted({f["category"] for f in result.lint_findings})
     assert "orphan" in categories
     assert "broken_link" in categories
-    assert llm.calls == []  # no page has ≥2 sources
     assert result.lint_summary.get("orphan", 0) >= 2
     assert result.lint_summary.get("broken_link", 0) >= 1
 
@@ -313,8 +310,8 @@ async def test_lint_runs_llm_contradiction_check_for_pages_with_two_sources(stor
     job = _new_job(space.id)
     await db.jobs.insert_one(job.model_dump())
 
-    llm_response = json.dumps(
-        {
+    contradiction_model = TestModel(
+        custom_output_args={
             "findings": [
                 {
                     "claim": "Allianz withdrew from cyber insurance in 2023",
@@ -323,19 +320,18 @@ async def test_lint_runs_llm_contradiction_check_for_pages_with_two_sources(stor
                     "source_ids": ["src_a", "src_b"],
                 }
             ]
-        }
-    )
-    llm = FakeLLMDriver([llm_response])
-
-    result = await run_lint(
-        job_id=job.id,
-        space_id=space.id,
-        storage=storage,
-        settings=settings,
-        llm=llm,
+        },
+        call_tools=[],
     )
 
-    assert len(llm.calls) == 1
+    with contradictions_agent.override(model=contradiction_model):
+        result = await run_lint(
+            job_id=job.id,
+            space_id=space.id,
+            storage=storage,
+            settings=settings,
+        )
+
     supersessions = [f for f in result.lint_findings if f["category"] == "supersession"]
     assert len(supersessions) == 1
     assert supersessions[0]["page_path"] == "entities/company/allianz"
@@ -371,7 +367,6 @@ async def test_lint_webhook_fires_on_success(storage, settings, monkeypatch):
         space_id=space.id,
         storage=storage,
         settings=settings,
-        llm=FakeLLMDriver([]),
     )
 
     assert any(d["event"] == WebhookEvent.JOB_COMPLETE for d in delivered)

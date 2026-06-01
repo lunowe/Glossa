@@ -9,7 +9,10 @@ minio
 pyyaml
 python-multipart
 jinja2>=3.1
-anthropic>=0.92.0
+# All LLM inference goes through Pydantic AI. The slim package + provider extras
+# keeps the install lean; add more extras (e.g. google, groq) to enable more
+# providers in a Space's llm_config.provider.
+pydantic-ai-slim[openai,anthropic]>=1.0
 mcp>=1.27.1
 # Link ingestion: fetch a URL and extract readable main content as markdown.
 trafilatura

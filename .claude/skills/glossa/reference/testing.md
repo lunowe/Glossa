@@ -30,38 +30,84 @@ and ruff. Tests relax some lints (`tests/** = ["T20","F821","F811","B020"]`), so
   and `GLOSSA_DEFAULT_LLM_API_KEY=test-key` monkeypatched in. Add more
   `monkeypatch.setenv(...)` in your own fixtures/tests for other config.
 
-## Faking the LLM — `tests/fake_llm.py`
+## Driving Pydantic AI agents in tests
 
-`FakeLLMDriver(responses)` where `responses` is either a `list[str]` served in
-order, or a callable `(messages) -> str`. It records every call in `.calls`
-(a `list[list[LLMMessage]]`) and returns `LLMResponse(content=...)`. Script the
-**exact JSON** each pipeline step expects:
+All LLM calls go through Pydantic AI agents. Override the model per-agent with
+`agent.override(model=...)` (context manager):
+
+**Structured-output agents** (`extract_agent`, `query_route_agent`,
+`contradictions_agent`) — use `TestModel` with `custom_output_args` (a dict
+matching the output type's fields) and `call_tools=[]` to skip tool calls:
 
 ```python
-import json
-from tests.fake_llm import FakeLLMDriver
+from pydantic_ai.models.test import TestModel
+from glossa.ingest.agents import extract_agent
 
-extract = json.dumps({"entities": [
-    {"type": "company", "title": "Allianz", "slug": "allianz",
-     "page_path": "entities/company/allianz", "relevance": "…"}],
-    "source_summary_markdown": "…", "log_blurb": "…"})
-update  = json.dumps({"new_content": "# Allianz\n…", "is_changed": True, "change_summary": "…"})
-llm = FakeLLMDriver([extract, update])     # extract call, then one per entity
-# query: [route_json, answer_markdown]; lint: [contradiction_json] per ≥2-source page
+extract = TestModel(
+    custom_output_args={
+        "entities": [{"type": "company", "title": "Allianz", "slug": "allianz",
+                       "page_path": "entities/company/allianz", "relevance": "…"}],
+        "source_summary_markdown": "…",
+        "log_blurb": "ingested",
+    },
+    call_tools=[],
+)
+with extract_agent.override(model=extract):
+    ...
 ```
+
+**String-output agents** (`query_answer_agent`) — use `TestModel` with
+`custom_output_text`:
+
+```python
+answer = TestModel(custom_output_text="Allianz reported …", call_tools=[])
+with query_answer_agent.override(model=answer):
+    ...
+```
+
+**Agentic maintainer** (`maintainer_agent`) — use `FunctionModel` to emit a
+scripted sequence of `ToolCallPart` objects, then return the final report:
+
+```python
+from pydantic_ai.messages import ModelResponse, ToolCallPart, ToolReturnPart
+from pydantic_ai.models.function import FunctionModel
+from glossa.ingest.agents import maintainer_agent
+
+def _maintainer_model(tool_calls, *, log_blurb="updated wiki"):
+    def fn(messages, info):
+        already_called = any(
+            isinstance(p, ToolReturnPart) for m in messages for p in getattr(m, "parts", [])
+        )
+        if not already_called:
+            return ModelResponse(parts=[ToolCallPart(tool_name=n, args=a) for n, a in tool_calls])
+        return ModelResponse(
+            parts=[ToolCallPart(tool_name=info.output_tools[0].name,
+                                args={"log_blurb": log_blurb, "notes": ""})]
+        )
+    return FunctionModel(fn)
+
+maintain = _maintainer_model([
+    ("create_page", {"path": "entities/company/allianz", "kind": "entity",
+                     "title": "Allianz", "body": "# Allianz\n\n…"}),
+])
+with maintainer_agent.override(model=maintain):
+    ...
+```
+
+See `tests/test_ingest.py` for the full worked example (create, edit, dedup,
+synthesis, step-cap, and failure cases).
 
 ## Skeleton — exercise a pipeline directly (no HTTP)
 
 ```python
-import json
 from datetime import UTC, datetime
 from glossa.db.client import get_db
 from glossa.models.space import Space
 from glossa.models.source import Source, SourceIngestionMode
-from glossa.ingest.workflow import run_ingest          # call the runner directly
-from tests.fake_llm import FakeLLMDriver
+from glossa.ingest.agents import extract_agent, maintainer_agent
+from glossa.ingest.workflow import run_ingest
 
-async def test_ingest_creates_pages(storage, settings):   # fixtures injected
+async def test_ingest_creates_pages(storage, settings):
     db = get_db()
     now = datetime.now(UTC)
     space = Space(id="gls_t", tenant_id="t1", name="W", slug="w",
@@ -69,25 +115,26 @@ async def test_ingest_creates_pages(storage, settings):   # fixtures injected
     await db.spaces.insert_one(space.model_dump())
     await storage.init_space(space.id)
     src = Source(id="src_1", space_id=space.id, title="Q3",
-                 ingestion_mode=SourceIngestionMode.PUSH, content_inline="Allianz …", created_at=now)
+                 ingestion_mode=SourceIngestionMode.PUSH, content_inline="Allianz …",
+                 created_at=now)
     await db.sources.insert_one(src.model_dump())
 
-    llm = FakeLLMDriver([extract_json, update_json])
-    # run_ingest's exact signature lives in glossa/ingest/workflow.py — confirm there.
-    result = await run_ingest(space_id=space.id, source_id=src.id,
-                              storage=storage, settings=settings, llm=llm)
+    # seed a job doc too — workflow.py expects it in the DB
+    extract = TestModel(custom_output_args={...}, call_tools=[])
+    maintain = _maintainer_model([("create_page", {...})])
+    with extract_agent.override(model=extract), maintainer_agent.override(model=maintain):
+        result = await run_ingest(job_id="job_x", space_id=space.id, source_id=src.id,
+                                  storage=storage, settings=settings)
 
     page = await storage.read_page(space.id, "pages/entities/company/allianz.md")
     assert "[[summaries/src-src_1]]" in page
-    assert "[[entities/company/allianz]]" in await storage.read_page(space.id, "index.md")
-    assert len(llm.calls) == 2
 ```
 
 > Pipeline runners (`run_ingest`, `run_lint`, `answer_question`) take `storage`,
-> `settings`, and `llm` as parameters precisely so tests can inject fakes. The
-> `enqueue_*` wrappers build the real driver via the factory and run in the
-> background — for unit tests call the runner directly. Confirm the current
-> signature in the source before relying on it.
+> `settings`, and an optional `model` parameter so tests can inject overrides at
+> the agent level. The `enqueue_*` wrappers build the real model via `build_model`
+> and run in the background — for unit tests call the runner directly and use
+> `agent.override`. Confirm the current signature in the source before relying on it.
 
 ## Skeleton — hit the HTTP API
 
@@ -125,7 +172,7 @@ use `auth_required=False` for the synthetic-admin path. See `tests/test_auth.py`
 
 | Adding/Changing | Look at | Assert on |
 |---|---|---|
-| Ingest | `test_ingest.py` | pages in storage, DB Page docs, `index.md`/`log.md`, `llm.calls` |
+| Ingest | `test_ingest.py` | pages in storage, DB Page docs, `index.md`/`log.md`, `pages_created`/`pages_updated` |
 | URL / upload ingest | `test_ingest_url_upload.py` | monkeypatch `url_fetcher.fetch_url_as_markdown` / `doc_parser.parse_asset_to_text` (never hit the network or LiteParse); `storage.write_asset`/`read_asset`; the upload HTTP route |
 | Query | `test_query.py` | `pages_consulted`, `cited_pages`, `cited_sources` |
 | Lint | `test_lint.py` | `lint_findings`, `lint_summary`, `lint_report.md` |

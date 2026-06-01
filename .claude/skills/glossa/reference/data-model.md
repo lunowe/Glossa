@@ -10,8 +10,19 @@ IDs are `{prefix}_{uuid4().hex[:12]}` (or `secrets.token_urlsafe` for tokens).
 `id` (`gls_…`), `tenant_id`, `name`, `slug`, `bucket_uri` (`s3://<bucket>/<space_id>/`),
 `schema_path` (default `"schema.md"`), `llm_config: LLMConfig`, `stats: SpaceStats`,
 `created_at`, `updated_at`.
-- **`LLMConfig`**: `mode: LLMMode` (`hosted`\|`byo`, default `byo`), `endpoint?`,
-  `model?`, `api_key_ref?` (`"env:VAR"` or literal), `extra: dict`.
+- **`LLMConfig`** — provider-agnostic (preferred) + legacy back-compat:
+  - `provider?: str` — Pydantic AI provider name (`"openai"`, `"anthropic"`,
+    `"google"`, `"groq"`, …). When set, takes precedence over `mode`.
+  - `base_url?: str` — OpenAI-compatible base URL (preferred over legacy
+    `endpoint`).
+  - `model?: str`, `api_key_ref?: str` (`"env:VAR"` or literal), `extra: dict`.
+  - *Legacy two-mode config (back-compat; used only when `provider` is unset):*
+    `mode: LLMMode` (`hosted`\|`byo`, default `byo`), `endpoint?: str`.
+    `mode=byo` → OpenAI-compatible at `base_url`/`endpoint`; `mode=hosted` →
+    Anthropic. Existing spaces keep working without migration.
+  - Resolution precedence (see `glossa/llm/models.py` `build_model`): `provider`
+    set → that provider; else `mode=hosted` → anthropic; else byo/default →
+    `settings.default_llm_provider` (OpenAI-compatible).
 - **`SpaceStats`**: `source_count` (0), `page_count` (0), `last_ingest_at?`.
 
 ### Source — `glossa/models/source.py`

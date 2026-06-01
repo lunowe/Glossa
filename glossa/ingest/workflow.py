@@ -4,9 +4,14 @@
 ``run_ingest`` which executes the workflow step by step, updating the Job
 record after each phase and firing webhooks on completion.
 
-For MVP this is in-process. The Job model and asyncio.Task split makes it
-easy to move to a real worker (Arq/RQ/Celery) without changing the API
-contract.
+The pipeline: fetch the source, extract entities + a summary (single LLM call),
+write the per-source summary page, then run the agentic **maintainer** which
+edits the wiki with surgical patch tools (dedup, synthesis, minimal edits) under
+caps; the maintainer's working copy is flushed deterministically, then the index
+and log are regenerated.
+
+For MVP this is in-process. The Job model and asyncio.Task split makes it easy to
+move to a real worker (Arq/RQ/Celery) without changing the API contract.
 """
 
 import asyncio
@@ -19,19 +24,20 @@ from fastapi import FastAPI
 
 from glossa.concurrency import lock_for_space, track_background_task
 from glossa.db.client import get_db
-from glossa.ingest import index_writer, log_writer, page_writer, source_fetcher, webhook_delivery
+from glossa.ingest import agents, index_writer, log_writer, page_writer, source_fetcher, webhook_delivery
 from glossa.ingest.extract import extract_from_source
-from glossa.llm import build_driver
+from glossa.llm import build_model, model_settings_for, resolve_model_name, resolve_provider, usage_to_dict
 from glossa.models.job import Job, JobKind, JobResult, JobStatus
 from glossa.models.page import PageKind
 from glossa.models.source import Source, SourceStatus
-from glossa.models.space import LLMMode, Space
+from glossa.models.space import Space
 from glossa.models.webhook import WebhookEvent
 from glossa.usage import Operation, record_usage
 
 if TYPE_CHECKING:
+    from pydantic_ai.models import Model
+
     from glossa.config import Settings
-    from glossa.llm.base import LLMDriver
     from glossa.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
@@ -58,7 +64,7 @@ async def enqueue_ingest(*, space_id: str, source_id: str, app: FastAPI) -> Job:
             source_id=source_id,
             storage=storage,
             settings=settings,
-            llm=None,
+            model=None,
         )
     )
     track_background_task(task)
@@ -72,7 +78,7 @@ async def _run_ingest_safely(
     source_id: str,
     storage: "StorageBackend",
     settings: "Settings",
-    llm: "LLMDriver | None",
+    model: "Model | None",
 ) -> None:
     try:
         await run_ingest(
@@ -81,7 +87,7 @@ async def _run_ingest_safely(
             source_id=source_id,
             storage=storage,
             settings=settings,
-            llm=llm,
+            model=model,
         )
     except Exception as e:
         logger.exception("ingest job %s failed", job_id)
@@ -100,7 +106,7 @@ async def run_ingest(
     source_id: str,
     storage: "StorageBackend",
     settings: "Settings",
-    llm: "LLMDriver | None" = None,
+    model: "Model | None" = None,
 ) -> JobResult:
     """Execute one ingest job to completion.
 
@@ -115,7 +121,7 @@ async def run_ingest(
             source_id=source_id,
             storage=storage,
             settings=settings,
-            llm=llm,
+            model=model,
         )
 
 
@@ -126,7 +132,7 @@ async def _run_ingest_inner(
     source_id: str,
     storage: "StorageBackend",
     settings: "Settings",
-    llm: "LLMDriver | None",
+    model: "Model | None",
 ) -> JobResult:
     db = get_db()
     started_at = datetime.now(UTC)
@@ -145,10 +151,11 @@ async def _run_ingest_inner(
         raise RuntimeError(f"source {source_id} not found in space {space_id}")
     source = Source.model_validate(source_doc)
 
-    if llm is None:
-        llm = build_driver(space, settings)
-
-    effective_model = _resolve_effective_model(space, settings)
+    if model is None:
+        model = build_model(space, settings)
+    provider = resolve_provider(space, settings)
+    effective_model = resolve_model_name(space, settings)
+    settings_for_call = model_settings_for(space, settings, temperature=0.2)
 
     await db.sources.update_one(
         {"id": source_id},
@@ -160,8 +167,12 @@ async def _run_ingest_inner(
         source, settings.ingest_max_source_chars, storage=storage, settings=settings
     )
 
+    # 1. Extract (single-shot): entities + a self-contained summary.
     extraction = await extract_from_source(
-        llm=llm,
+        model=model,
+        model_settings=settings_for_call,
+        provider=provider,
+        model_name=effective_model,
         schema_markdown=schema_markdown,
         source={
             "id": source.id,
@@ -170,13 +181,12 @@ async def _run_ingest_inner(
             "metadata": source.metadata,
         },
         source_content=source_content,
-        model=effective_model,
     )
     await record_usage(
         tenant_id=space.tenant_id,
         space_id=space.id,
         operation=Operation.INGEST_EXTRACT,
-        model=extraction.model,
+        model=effective_model,
         usage=extraction.usage,
         job_id=job_id,
     )
@@ -184,53 +194,7 @@ async def _run_ingest_inner(
     pages_created: list[str] = []
     pages_updated: list[str] = []
 
-    for entity in extraction.entities:
-        existing = await page_writer.read_existing_page(storage, space_id, entity.page_path)
-        update, page_usage = await page_writer.llm_update_entity_page(
-            llm=llm,
-            schema_markdown=schema_markdown,
-            entity=entity,
-            existing_page_markdown=existing,
-            source_id=source.id,
-            source_title=source.title,
-            source_summary_markdown=extraction.source_summary_markdown,
-        )
-        await record_usage(
-            tenant_id=space.tenant_id,
-            space_id=space.id,
-            operation=Operation.INGEST_UPDATE_PAGE,
-            model=effective_model,
-            usage=page_usage,
-            job_id=job_id,
-        )
-        new_content = str(update["new_content"])
-
-        existing_source_refs = []
-        if source_doc:
-            existing_page = await db.pages.find_one(
-                {"space_id": space_id, "path": entity.page_path}, {"source_refs": 1}
-            )
-            if existing_page:
-                existing_source_refs = existing_page.get("source_refs") or []
-        merged_refs = list(dict.fromkeys([*existing_source_refs, source.id]))
-
-        kind = PageKind.ENTITY
-        is_new, is_changed = await page_writer.upsert_page(
-            storage=storage,
-            space_id=space_id,
-            page_path=entity.page_path,
-            kind=kind,
-            title=entity.title,
-            new_content=new_content,
-            source_refs=merged_refs,
-            job_id=job_id,
-            tenant_id=space.tenant_id,
-        )
-        if is_new:
-            pages_created.append(entity.page_path)
-        elif is_changed:
-            pages_updated.append(entity.page_path)
-
+    # 2. Summary page first, so the maintainer's edits can cite [[summaries/src-<id>]].
     summary_path = f"summaries/src-{source.id}"
     summary_markdown = page_writer.build_summary_page(
         source_id=source.id,
@@ -256,7 +220,45 @@ async def _run_ingest_inner(
     else:
         pages_updated.append(summary_path)
 
+    # 3. Maintainer agent: surgical, dedup-aware edits + synthesis (capped).
+    entities = [
+        {"type": e.type, "title": e.title, "page_path": e.page_path, "relevance": e.relevance}
+        for e in extraction.entities
+    ]
+    wc, report, maintainer_usage, capped = await agents.run_maintainer(
+        model=model,
+        model_settings=settings_for_call,
+        retries=settings.ingest_agent_retries,
+        space=space,
+        source=source,
+        source_summary_markdown=extraction.source_summary_markdown,
+        entities=entities,
+        schema_markdown=schema_markdown,
+        storage=storage,
+        settings=settings,
+    )
+    if maintainer_usage is not None:
+        await record_usage(
+            tenant_id=space.tenant_id,
+            space_id=space.id,
+            operation=Operation.INGEST_UPDATE_PAGE,
+            model=effective_model,
+            usage=usage_to_dict(maintainer_usage, provider=provider),
+            job_id=job_id,
+        )
+
+    # 4. Flush the working copy deterministically (validate, stamp, quota, write).
+    created, updated = await agents.flush_working_copy(
+        wc=wc, space=space, source=source, job_id=job_id, storage=storage
+    )
+    pages_created.extend(created)
+    pages_updated.extend(updated)
+
+    # 5. Index + log (deterministic).
     await index_writer.regenerate_index(storage=storage, space_id=space_id)
+    log_blurb = report.log_blurb.strip() if report and report.log_blurb.strip() else extraction.log_blurb
+    if capped:
+        log_blurb = f"{log_blurb} [partial: ingest step cap reached]".strip()
     await log_writer.append_log_entry(
         storage=storage,
         space_id=space_id,
@@ -265,14 +267,14 @@ async def _run_ingest_inner(
         pages_created=pages_created,
         pages_updated=pages_updated,
         summary_path=summary_path,
-        note=extraction.log_blurb,
+        note=log_blurb,
     )
 
     result = JobResult(
         pages_created=pages_created,
         pages_updated=pages_updated,
         contradictions_flagged=[],
-        log_entry=extraction.log_blurb,
+        log_entry=log_blurb,
     )
     ended_at = datetime.now(UTC)
     await db.jobs.update_one(
@@ -309,21 +311,6 @@ async def _run_ingest_inner(
         payload={"job_id": job_id, "source_id": source_id, "result": result.model_dump()},
     )
     return result
-
-
-def _resolve_effective_model(space: Space, settings: "Settings") -> str:
-    """Return the model string that will be used for LLM calls in this space.
-
-    Mirrors the precedence in ``glossa.llm.factory.build_driver`` so usage
-    events record the same model the driver actually calls. Used for billing
-    attribution.
-    """
-    cfg = space.llm_config
-    if cfg.model:
-        return cfg.model
-    if cfg.mode == LLMMode.HOSTED:
-        return settings.hosted_default_model
-    return settings.default_llm_model
 
 
 async def _mark_job_failed(job_id: str, error_message: str) -> None:

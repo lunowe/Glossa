@@ -6,16 +6,31 @@ Pages with 0 or 1 cited sources are skipped — they cannot contradict themselve
 """
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
+
+from pydantic import BaseModel
+from pydantic_ai import Agent
 
 from glossa.db.client import get_db
 from glossa.lint.prompts import SYSTEM_LINT_CONTRADICTIONS, contradictions_user_prompt
 from glossa.lint.scanner import PageRecord
-from glossa.llm.base import LLMDriver, LLMMessage
-from glossa.utils.json_parse import LLMJSONError, parse
+from glossa.llm import usage_to_dict
 
 if TYPE_CHECKING:
+    from pydantic_ai.models import Model
+
     from glossa.storage.base import StorageBackend
+
+
+class FindingOut(BaseModel):
+    claim: str
+    kind: Literal["contradiction", "supersession"] = "contradiction"
+    explanation: str = ""
+    source_ids: list[str] = []
+
+
+class ContradictionsOut(BaseModel):
+    findings: list[FindingOut] = []
 
 
 @dataclass
@@ -26,6 +41,10 @@ class ContradictionFinding:
     explanation: str
     source_ids: list[str]
     related_paths: list[str]
+
+
+# Module-level agent — no model bound; model injected at run time.
+contradictions_agent = Agent(output_type=ContradictionsOut, instructions=SYSTEM_LINT_CONTRADICTIONS)
 
 
 def _summary_storage_path(source_id: str) -> str:
@@ -61,7 +80,8 @@ async def _load_source_summaries(
 
 async def check_page_for_contradictions(
     *,
-    llm: LLMDriver,
+    model: "Model",
+    provider: str,
     storage: "StorageBackend",
     space_id: str,
     schema_markdown: str,
@@ -70,8 +90,8 @@ async def check_page_for_contradictions(
     """Run the contradiction check on one page.
 
     Returns ``(findings, usage)``. ``usage`` is ``None`` when no LLM call was
-    made (page had <2 source citations); otherwise it is the raw provider
-    usage dict, suitable for ``record_usage``.
+    made (page had <2 source citations); otherwise it is the provider usage
+    dict, suitable for ``record_usage``.
     """
     summaries = await _load_source_summaries(
         storage=storage,
@@ -87,37 +107,30 @@ async def check_page_for_contradictions(
         page_content=page.content,
         source_summaries=summaries,
     )
-    response = await llm.chat(
-        [
-            LLMMessage(role="system", content=SYSTEM_LINT_CONTRADICTIONS),
-            LLMMessage(role="user", content=user_prompt),
-        ],
-        temperature=0.1,
+    result = await contradictions_agent.run(
+        user_prompt,
+        model=model,
+        model_settings={"temperature": 0.1},
     )
-    usage = dict(response.usage or {})
-    data = parse(response.content)
-    if not isinstance(data, dict):
-        raise LLMJSONError("contradictions step expected a JSON object")
-    raw_findings = data.get("findings") or []
+    usage = usage_to_dict(result.usage, provider=provider)
+    out: ContradictionsOut = result.output
 
     findings: list[ContradictionFinding] = []
-    for f in raw_findings:
-        if not isinstance(f, dict):
-            continue
-        claim = str(f.get("claim") or "").strip()
+    for f in out.findings:
+        claim = f.claim.strip()
         if not claim:
             continue
-        kind = f.get("kind") or "contradiction"
+        kind = f.kind
         if kind not in ("contradiction", "supersession"):
             kind = "contradiction"
-        source_ids = [str(s) for s in (f.get("source_ids") or []) if s]
+        source_ids = [str(s) for s in f.source_ids if s]
         related = [f"summaries/src-{sid}" for sid in source_ids]
         findings.append(
             ContradictionFinding(
                 page_path=page.path,
                 claim=claim,
                 kind=kind,
-                explanation=str(f.get("explanation") or "").strip(),
+                explanation=f.explanation.strip(),
                 source_ids=source_ids,
                 related_paths=related,
             )

@@ -1,14 +1,14 @@
-"""End-to-end query test using a fake LLM and in-memory storage."""
+"""End-to-end query test using Pydantic AI TestModel overrides."""
 
-import json
 from datetime import UTC, datetime
+
+from pydantic_ai.models.test import TestModel
 
 from glossa.db.client import get_db
 from glossa.models.page import Page, PageKind
 from glossa.models.source import Source, SourceIngestionMode
 from glossa.models.space import Space
-from glossa.query import QueryRequest, answer_question
-from tests.fake_llm import FakeLLMDriver
+from glossa.query import QueryRequest, answer_question, query_answer_agent, query_route_agent
 
 
 async def _seed_wiki(storage):
@@ -62,22 +62,25 @@ async def _seed_wiki(storage):
 async def test_query_returns_answer_with_citations(storage, settings):
     space = await _seed_wiki(storage)
 
-    route = json.dumps(
-        {
+    route_model = TestModel(
+        custom_output_args={
             "pages_to_load": ["entities/company/allianz"],
             "reasoning": "directly about Allianz",
-        }
+        },
+        call_tools=[],
     )
-    answer = "Allianz bietet Cyberversicherung für KMU an ([[entities/company/allianz]])."
+    answer_model = TestModel(
+        custom_output_text="Allianz bietet Cyberversicherung für KMU an ([[entities/company/allianz]]).",
+        call_tools=[],
+    )
 
-    llm = FakeLLMDriver([route, answer])
-    response = await answer_question(
-        space_id=space.id,
-        request=QueryRequest(question="Was bietet Allianz an?"),
-        storage=storage,
-        settings=settings,
-        llm=llm,
-    )
+    with query_route_agent.override(model=route_model), query_answer_agent.override(model=answer_model):
+        response = await answer_question(
+            space_id=space.id,
+            request=QueryRequest(question="Was bietet Allianz an?"),
+            storage=storage,
+            settings=settings,
+        )
 
     assert response.pages_consulted == ["entities/company/allianz"]
     assert response.cited_pages == ["entities/company/allianz"]
@@ -89,16 +92,19 @@ async def test_query_returns_answer_with_citations(storage, settings):
 async def test_query_empty_wiki_returns_no_answer(storage, settings):
     space = await _seed_wiki(storage)
 
-    route = json.dumps({"pages_to_load": [], "reasoning": "nothing matches"})
-    llm = FakeLLMDriver([route])
-
-    response = await answer_question(
-        space_id=space.id,
-        request=QueryRequest(question="Was bietet Munich Re an?"),
-        storage=storage,
-        settings=settings,
-        llm=llm,
+    route_model = TestModel(
+        custom_output_args={"pages_to_load": [], "reasoning": "nothing matches"},
+        call_tools=[],
     )
+
+    with query_route_agent.override(model=route_model):
+        response = await answer_question(
+            space_id=space.id,
+            request=QueryRequest(question="Was bietet Munich Re an?"),
+            storage=storage,
+            settings=settings,
+        )
+
     assert response.pages_consulted == []
     assert response.cited_pages == []
     assert response.cited_sources == []

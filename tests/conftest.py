@@ -30,6 +30,7 @@ def storage():
 def settings(monkeypatch):
     from glossa.config import Settings
 
+    monkeypatch.setenv("GLOSSA_DEFAULT_LLM_PROVIDER", "openai")
     monkeypatch.setenv("GLOSSA_DEFAULT_LLM_ENDPOINT", "http://test/v1")
     monkeypatch.setenv("GLOSSA_DEFAULT_LLM_API_KEY", "test-key")
     return Settings()

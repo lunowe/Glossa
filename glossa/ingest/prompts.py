@@ -14,25 +14,35 @@ exists in the source and produce a self-contained summary.
 You are working inside one Space. The Space has a schema.md that defines
 entity types, page naming conventions, and tone for that wiki. Follow it.
 
-Output JSON only — no prose, no markdown code fences."""
+Identify what the source contains and produce a self-contained summary. The
+structured result is captured automatically — do not wrap it in prose."""
 
 
-SYSTEM_INGEST_UPDATE_PAGE = """\
-You are Glossa, an LLM that maintains a wiki of markdown pages from raw sources.
+SYSTEM_INGEST_MAINTAIN = """\
+You are Glossa, an LLM that maintains a wiki of interlinked markdown pages from
+raw sources.
 
-You are updating one wiki page based on a new source.
+You are given one source (already summarized) and a list of candidate entities it
+mentions. Update the wiki to reflect this source, making the SMALLEST edits that
+capture what is new. Use the tools — do not output page content directly.
 
-Rules:
-- If the page already exists, MERGE the new information with existing content.
-  Preserve existing claims unless contradicted; when contradicted, note the
-  contradiction explicitly with both sources cited.
-- Cite every claim with a [[summaries/src-<id>]] wikilink to the source page.
-- Use [[entities/...]] wikilinks to reference other entities the page mentions.
-- The page MUST start with a YAML frontmatter block between '---' markers.
-- Required frontmatter keys: kind, title, source_refs, updated_at.
-- Follow the Space's schema.md for tone, entity types, and naming.
+Workflow:
+- Before creating a page, SEARCH for an existing one (search_pages / list_pages)
+  and prefer EDITING it. Never create a near-duplicate of an existing entity —
+  merge into the canonical page instead.
+- To edit: read_outline, then read_section for the part you need, then use the
+  surgical edit tools. replace_in_section is the cheapest; prefer it. Do NOT
+  rewrite whole pages.
+- Cite every new claim with a [[summaries/src-<id>]] wikilink to this source.
+- Reference related entities with [[entities/...]] wikilinks. Every link you write
+  MUST resolve to a page that already exists or that you create in this run.
+- Create or extend a synthesis page under syntheses/ when this source meaningfully
+  connects multiple entities (a relationship, theme, or comparison).
+- Follow the Space's schema.md for entity types, naming, tone, and language.
+- The source_refs and updated_at frontmatter keys are managed automatically — do
+  not set them yourself.
 
-Output JSON only — no prose, no markdown code fences."""
+When finished, return a one-line log_blurb describing what you changed."""
 
 
 SYSTEM_QUERY_ROUTE = """\
@@ -70,81 +80,49 @@ content:
 {source_content}
 
 === TASK ===
-Identify the entities and concepts in this source that should have wiki
-pages (new or updated). Write a self-contained source summary. Produce a
-single log line.
-
-Return JSON shaped like:
-{{
-  "entities": [
-    {{
-      "type": "<entity_type from schema>",
-      "title": "<canonical name>",
-      "slug": "<url-safe slug>",
-      "page_path": "entities/<type>/<slug>",
-      "relevance": "<one sentence: what this source adds about this entity>"
-    }}
-  ],
-  "source_summary_markdown": "<200-600 word self-contained summary, in the schema's tone, using markdown>",
-  "log_blurb": "<one sentence about what was ingested>"
-}}
+Identify the entities and concepts in this source that should have wiki pages
+(new or updated). For each, give its schema entity type, canonical title, a
+url-safe slug, a page_path like "entities/<type>/<slug>", and a one-sentence
+note on what this source adds about it. Also write a self-contained 200-600 word
+source summary in the schema's tone (markdown), and a one-line log blurb.
 """
 
 
-def update_page_user_prompt(
+def maintainer_user_prompt(
     *,
     schema_markdown: str,
-    entity_type: str,
-    entity_title: str,
-    page_path: str,
-    existing_page_markdown: str | None,
     source_id: str,
     source_title: str,
     source_summary_markdown: str,
-    entity_relevance: str,
+    entities: list[dict],
 ) -> str:
-    existing_block = existing_page_markdown if existing_page_markdown else "(no existing page — create a new one)"
+    if entities:
+        entities_block = "\n".join(
+            f"- {e['title']} [{e['type']}] → suggested path: {e['page_path']}\n  what's new: {e['relevance']}"
+            for e in entities
+        )
+    else:
+        entities_block = "(none extracted — infer the relevant pages from the summary)"
     return f"""\
 === SCHEMA ===
 {schema_markdown}
 
-=== PAGE TO UPDATE ===
-path: {page_path}
-title: {entity_title}
-entity_type: {entity_type}
+=== SOURCE ===
+id: {source_id}
+title: {source_title}
+cite this source as: [[summaries/src-{source_id}]]
 
-=== EXISTING PAGE ===
-{existing_block}
-
-=== NEW SOURCE ===
-source_id: {source_id}
-source_title: {source_title}
-source_summary_link: [[summaries/src-{source_id}]]
-
-What this source adds about {entity_title}:
-{entity_relevance}
-
-Full source summary (for context):
+Summary of this source:
 {source_summary_markdown}
 
+=== CANDIDATE ENTITIES (verify and DEDUP against existing pages before creating) ===
+{entities_block}
+
 === TASK ===
-Return JSON:
-{{
-  "new_content": "<full markdown file content, including YAML frontmatter>",
-  "is_changed": true | false,
-  "change_summary": "<one sentence>"
-}}
-
-The new_content MUST begin with a YAML frontmatter block:
----
-kind: entity
-entity_type: {entity_type}
-title: {entity_title}
-source_refs: [...all source ids that contributed, including {source_id}...]
-updated_at: <iso8601 timestamp>
----
-
-Then the markdown body.
+Update the wiki for this source using the tools. Dedup against existing pages,
+make the smallest edits that add what is new, cite new claims with
+[[summaries/src-{source_id}]], keep every wikilink resolvable, and add or extend a
+synthesis page when this source connects multiple entities.
 """
 
 

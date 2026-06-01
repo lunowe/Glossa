@@ -1,9 +1,20 @@
-from dataclasses import dataclass
+"""Single-shot extraction: read one source, return structured entities + summary.
 
-from glossa.ingest.prompts import SYSTEM_INGEST_EXTRACT, extract_user_prompt
-from glossa.llm.base import LLMDriver, LLMMessage
-from glossa.utils.json_parse import LLMJSONError, parse
+Runs ``extract_agent`` (Pydantic AI structured output) and normalizes the result
+into the dataclasses the ingest workflow consumes. This is the planning seed for
+the agentic maintainer step.
+"""
+
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+from glossa.ingest.agents import ExtractionOut, extract_agent
+from glossa.ingest.prompts import extract_user_prompt
+from glossa.llm import usage_to_dict
 from glossa.utils.slug import slugify
+
+if TYPE_CHECKING:
+    from pydantic_ai.models import Model
 
 
 @dataclass
@@ -26,51 +37,43 @@ class Extraction:
 
 async def extract_from_source(
     *,
-    llm: LLMDriver,
+    model: "Model",
+    model_settings: dict,
+    provider: str,
+    model_name: str,
     schema_markdown: str,
     source: dict,
     source_content: str,
-    model: str,
 ) -> Extraction:
     user_prompt = extract_user_prompt(
         schema_markdown=schema_markdown,
         source=source,
         source_content=source_content,
     )
-    response = await llm.chat(
-        [
-            LLMMessage(role="system", content=SYSTEM_INGEST_EXTRACT),
-            LLMMessage(role="user", content=user_prompt),
-        ],
-        temperature=0.2,
-    )
-    data = parse(response.content)
-    if not isinstance(data, dict):
-        raise LLMJSONError("extract step expected a JSON object")
+    result = await extract_agent.run(user_prompt, model=model, model_settings=model_settings)
+    data: ExtractionOut = result.output
 
-    entities_raw = data.get("entities") or []
     entities: list[ExtractedEntity] = []
-    for e in entities_raw:
-        title = e.get("title")
-        if not title:
+    for e in data.entities:
+        if not e.title:
             continue
-        entity_type = e.get("type") or "topic"
-        slug = e.get("slug") or slugify(title)
-        page_path = e.get("page_path") or f"entities/{slugify(entity_type)}/{slug}"
+        entity_type = e.type or "topic"
+        slug = e.slug or slugify(e.title)
+        page_path = (e.page_path or f"entities/{slugify(entity_type)}/{slug}").removesuffix(".md")
         entities.append(
             ExtractedEntity(
                 type=entity_type,
-                title=title,
+                title=e.title,
                 slug=slug,
-                page_path=page_path.removesuffix(".md"),
-                relevance=e.get("relevance") or "",
+                page_path=page_path,
+                relevance=e.relevance or "",
             )
         )
 
     return Extraction(
         entities=entities,
-        source_summary_markdown=str(data.get("source_summary_markdown") or "").strip(),
-        log_blurb=str(data.get("log_blurb") or "ingested source").strip(),
-        usage=dict(response.usage or {}),
-        model=model,
+        source_summary_markdown=(data.source_summary_markdown or "").strip(),
+        log_blurb=(data.log_blurb or "ingested source").strip(),
+        usage=usage_to_dict(result.usage, provider=provider),
+        model=model_name,
     )

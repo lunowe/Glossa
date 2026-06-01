@@ -19,28 +19,36 @@ illustrative placeholders; the code defaults are below.
 | `GLOSSA_API_HOST` | `0.0.0.0` | Bind host |
 | `GLOSSA_API_PORT` | `8200` | Bind port |
 
-## LLM — BYO (the only working mode)
+## LLM — provider-agnostic (Pydantic AI)
+
+All inference runs through **Pydantic AI** (`pydantic-ai-slim[openai,anthropic]`).
+A space selects a provider via `llm_config.provider`; if unset, the legacy
+`mode`/`endpoint` fields apply. More providers need the matching extra installed
+(e.g. `pydantic-ai-slim[google]`).
 
 | Env var | Default | Meaning |
 |---|---|---|
-| `GLOSSA_DEFAULT_LLM_MODE` | `byo` | Default mode for new spaces (`byo`\|`hosted`) |
-| `GLOSSA_DEFAULT_LLM_ENDPOINT` | `None` | OpenAI-compatible base URL; required for BYO unless the space sets its own |
-| `GLOSSA_DEFAULT_LLM_MODEL` | `gpt-4o-mini` | Fallback model |
-| `GLOSSA_DEFAULT_LLM_API_KEY` | `None` | Fallback BYO key |
+| `GLOSSA_DEFAULT_LLM_PROVIDER` | `openai` | Pydantic AI provider for spaces that don't set `llm_config.provider` (`openai` covers any OpenAI-compatible endpoint) |
+| `GLOSSA_DEFAULT_LLM_MODE` | `byo` | Legacy default mode (`byo`\|`hosted`); used when `provider` is unset |
+| `GLOSSA_DEFAULT_LLM_ENDPOINT` | `None` | OpenAI-compatible base URL; required for the openai provider unless the space sets its own |
+| `GLOSSA_DEFAULT_LLM_MODEL` | `gpt-4o-mini` | Fallback model name |
+| `GLOSSA_DEFAULT_LLM_API_KEY` | `None` | Fallback API key |
 
-## LLM — hosted (Anthropic; **stubbed — raises NotImplementedError**)
+## LLM — hosted (Anthropic; fully functional)
 
-| Env var | Default |
-|---|---|
-| `GLOSSA_HOSTED_ANTHROPIC_API_KEY` | `None` |
-| `GLOSSA_HOSTED_DEFAULT_MODEL` | `claude-opus-4-7` |
-| `GLOSSA_HOSTED_DEFAULT_EFFORT` | `high` |
-| `GLOSSA_HOSTED_DEFAULT_MAX_TOKENS` | `16000` |
-| `GLOSSA_HOSTED_ENABLE_THINKING` | `true` |
+| Env var | Default | Meaning |
+|---|---|---|
+| `GLOSSA_HOSTED_ANTHROPIC_API_KEY` | `None` | Required when provider is `anthropic` (or `mode=hosted`) |
+| `GLOSSA_HOSTED_DEFAULT_MODEL` | `claude-opus-4-7` | Model name for Anthropic spaces |
+| `GLOSSA_HOSTED_DEFAULT_EFFORT` | `high` | Thinking effort level |
+| `GLOSSA_HOSTED_DEFAULT_MAX_TOKENS` | `16000` | Max output tokens |
+| `GLOSSA_HOSTED_ENABLE_THINKING` | `true` | Enable adaptive thinking (Anthropic only) |
 
-Per-space `llm_config.api_key_ref` may be `"env:OPENAI_API_KEY"` /
+Set `llm_config.provider = "anthropic"` on a space (or use the legacy
+`mode=hosted`) to route that space through Anthropic with thinking + prompt
+caching. Per-space `llm_config.api_key_ref` may be `"env:OPENAI_API_KEY"` /
 `"env:ANTHROPIC_API_KEY"`; provide those keys in the environment too. See
-`reference/internals.md` § LLM driver factory for resolution order.
+`reference/internals.md` § Model layer for resolution precedence.
 
 ## Ingest
 
@@ -51,6 +59,19 @@ Per-space `llm_config.api_key_ref` may be `"env:OPENAI_API_KEY"` /
 | `GLOSSA_LITEPARSE_OCR_ENABLED` | `false` | Enable LiteParse OCR (Tesseract) for scanned uploads |
 | `GLOSSA_URL_FETCH_TIMEOUT_SECONDS` | `30` | HTTP timeout when fetching a `url`-mode link |
 | `GLOSSA_URL_FETCH_USER_AGENT` | `GlossaBot/0.1 (+…)` | User-Agent sent when fetching `url`-mode links |
+
+### Agentic maintainer guardrails
+
+The ingest maintainer is a Pydantic AI agent that edits pages with surgical patch
+tools. These caps bound cost and the per-space lock hold; hitting one ends the run
+cleanly (partial flush + log note `[partial: ingest step cap reached]`).
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `GLOSSA_INGEST_MAX_AGENT_STEPS` | `40` | Max tool calls (model requests) per maintainer run |
+| `GLOSSA_INGEST_MAX_PAGES_PER_RUN` | `12` | Max distinct pages one ingest may touch |
+| `GLOSSA_INGEST_MAX_EDIT_BYTES` | `200000` | Max total bytes written across the run |
+| `GLOSSA_INGEST_AGENT_RETRIES` | `2` | Pydantic AI retries for output/tool validation failures |
 
 `url`-mode ingestion uses **`trafilatura`** (fetch + readable-content→markdown);
 `upload`-mode uses **`liteparse`** (`run-llama/liteparse`, local, no API key) to

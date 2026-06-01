@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     session_cookie_secure: bool = False  # set true in production behind https; SameSite=Lax + Secure
 
     default_llm_mode: str = "byo"
+    # Provider-agnostic default (Pydantic AI provider name) for spaces that don't
+    # set llm_config.provider. "openai" covers OpenAI and any OpenAI-compatible
+    # endpoint via default_llm_endpoint (base_url).
+    default_llm_provider: str = "openai"
     default_llm_endpoint: str | None = None
     default_llm_model: str = "gpt-4o-mini"
     default_llm_api_key: str | None = None
@@ -33,6 +37,13 @@ class Settings(BaseSettings):
     hosted_enable_thinking: bool = True
 
     ingest_max_source_chars: int = 200_000
+    # Agentic ingest ("wiki maintainer") guardrails. The maintainer agent edits
+    # pages with surgical patch tools under these caps; hitting one ends the run
+    # cleanly and is recorded (never silently truncated).
+    ingest_max_agent_steps: int = 40  # max tool calls (model requests) per run
+    ingest_max_pages_per_run: int = 12  # max distinct pages one ingest may touch
+    ingest_max_edit_bytes: int = 200_000  # max total bytes written across the run
+    ingest_agent_retries: int = 2  # Pydantic AI retries for output/tool validation
     # Document upload (upload-mode sources, parsed with LiteParse during ingest).
     ingest_max_upload_bytes: int = 25_000_000  # 25 MB cap on a single uploaded file
     liteparse_ocr_enabled: bool = False

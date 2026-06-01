@@ -37,11 +37,14 @@ The entire domain is five objects. Learn these and the rest follows.
 | **Job** | One async op (`ingest`, `lint`, `reindex`) with a `status` + `result`. `id` = `job_…` |
 | **Webhook** | Host integration callback, Stripe-style signed. `id` = `wh_…` |
 
-Three pluggable interfaces (see `reference/internals.md`):
+Two pluggable interfaces (see `reference/internals.md`):
 
 - **`StorageBackend`** — where pages live (MinIO today; in-memory for tests; FS/S3 later).
-- **`LLMDriver`** — who runs inference (`byo` = any OpenAI-compatible endpoint; `hosted` = Anthropic, stubbed).
 - **SourceProvider** *(implicit)* — push (content stored) or pull (`fetch_callback` lets the host stay system of record).
+
+LLM inference runs through **Pydantic AI** (`glossa/llm/models.py`). `build_model`
+constructs the right provider from the space's `llm_config`; all agents are
+module-level with no model bound (injected at call time).
 
 **The contract is stable; the implementation behind it is not.** Treat the API
 surface, the 5-object model, the bucket layout, and the webhook signature format
@@ -59,10 +62,11 @@ POST /spaces/{id}/query   { "question": … }   → synthesized answer + citatio
 POST /spaces/{id}/lint                         → queue a lint Job (orphans / broken links / contradictions)
 ```
 
-Ingest (per source): **fetch → extract entities (LLM) → merge each entity page
-(LLM) → write summary → regenerate index → append log → fire webhooks.** Jobs are
-serialised per-space (one ingest/lint at a time). Full detail in
-`reference/internals.md`.
+Ingest (per source): **fetch → extract (single LLM call: entities + summary) →
+write summary page → agentic maintainer with surgical patch tools (dedup, minimal
+section/substring edits, synthesis) → deterministic flush → regenerate index →
+append log → fire webhooks.** Jobs are serialised per-space (one ingest/lint at a
+time). Full detail in `reference/internals.md`.
 
 ## Reference map — open what you need
 
@@ -72,7 +76,7 @@ serialised per-space (one ingest/lint at a time). Full detail in
 | Need field names / enums / frontmatter / slug rules / bucket layout | `reference/data-model.md` |
 | Setting env vars, auth modes, bootstrap, OAuth, quotas config | `reference/config.md` |
 | Using the Python `GlossaClient`, verifying webhooks, wiring MCP, syncing Obsidian, building a host integration | `reference/integrations.md` |
-| Changing routes/models/pipelines, adding a StorageBackend or LLMDriver, understanding ingest/query/lint internals & concurrency | `reference/internals.md` |
+| Changing routes/models/pipelines, adding a StorageBackend or Pydantic AI provider, understanding ingest/query/lint internals & concurrency | `reference/internals.md` |
 | Writing or running tests (fixtures, fake LLM, endpoint test client) | `reference/testing.md` |
 
 ## Run it locally
@@ -145,7 +149,12 @@ curl -s -X POST $BASE/spaces/$SID/query -H "Authorization: Bearer $KEY" \
   someone else's space/job/page exists. Quota-exceeded returns **402**.
 - **Keys are shown once.** `POST …/api-keys` returns `plaintext` exactly once;
   only the SHA-256 hash is stored. Lost = rotate.
-- **`byo` is the only working LLM mode.** `hosted` raises `NotImplementedError`.
+- **LLM config is provider-agnostic.** Set `llm_config.provider` to any Pydantic
+  AI provider name (`"openai"`, `"anthropic"`, `"groq"`, …). Legacy `mode=byo`
+  (OpenAI-compatible endpoint) and `mode=hosted` (Anthropic, with thinking +
+  prompt caching) both work. Resolution precedence: `provider` set → that
+  provider; else `mode=hosted` → anthropic; else byo/default → `openai`. See
+  `reference/config.md` and `reference/internals.md` § Model layer.
 - **Jobs are in-process** (`asyncio.create_task`). A job in flight at restart is
   stuck in `running`; the per-space lock is an `asyncio.Lock` (single-worker).
 - **The Obsidian sync is one-way.** Glossa owns the wiki; Obsidian is a local
@@ -162,8 +171,8 @@ update the skill in the same change.** Specifically:
 - **New/changed `GLOSSA_*` env var, auth mode, or quota dimension** → update `reference/config.md`.
 - **Change to the Python client, MCP tools/resources, Obsidian CLI flags, or
   webhook signature format** → update `reference/integrations.md`.
-- **Change to ingest/query/lint pipeline, the StorageBackend/LLMDriver interface,
-  or concurrency model** → update `reference/internals.md`.
+- **Change to ingest/query/lint pipeline, the StorageBackend interface, the
+  Pydantic AI model layer, or concurrency model** → update `reference/internals.md`.
 - **Change to test fixtures / fake LLM / how the test client is built** → update `reference/testing.md`.
 
 The live OpenAPI at `/docs` is the source of truth for endpoints; if this skill

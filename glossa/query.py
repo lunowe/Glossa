@@ -11,6 +11,7 @@ import re
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
+from pydantic_ai import Agent
 
 from glossa.db.client import get_db
 from glossa.ingest.prompts import (
@@ -19,20 +20,24 @@ from glossa.ingest.prompts import (
     query_answer_user_prompt,
     query_route_user_prompt,
 )
-from glossa.llm import build_driver
-from glossa.llm.base import LLMDriver, LLMMessage
+from glossa.llm import build_model, model_settings_for, resolve_model_name, resolve_provider, usage_to_dict
 from glossa.models.source import Source
-from glossa.models.space import LLMMode, Space
 from glossa.usage import Operation, record_usage
-from glossa.utils.json_parse import LLMJSONError, parse
 
 if TYPE_CHECKING:
+    from pydantic_ai.models import Model
+
     from glossa.config import Settings
     from glossa.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
 
 _WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
+
+
+class RouteOut(BaseModel):
+    pages_to_load: list[str] = []
+    reasoning: str | None = None
 
 
 class QueryRequest(BaseModel):
@@ -54,49 +59,51 @@ class QueryResponse(BaseModel):
     reasoning: str | None = None
 
 
+# Module-level agents — no model bound; model injected at run time.
+query_route_agent = Agent(output_type=RouteOut, instructions=SYSTEM_QUERY_ROUTE)
+query_answer_agent = Agent(output_type=str, instructions=SYSTEM_QUERY_ANSWER)
+
+
 async def answer_question(
     *,
     space_id: str,
     request: QueryRequest,
     storage: "StorageBackend",
     settings: "Settings",
-    llm: LLMDriver | None = None,
+    model: "Model | None" = None,
 ) -> QueryResponse:
     db = get_db()
     space_doc = await db.spaces.find_one({"id": space_id})
     if not space_doc:
         raise RuntimeError(f"space {space_id} not found")
+    from glossa.models.space import Space
+
     space = Space.model_validate(space_doc)
 
-    if llm is None:
-        llm = build_driver(space, settings)
+    if model is None:
+        model = build_model(space, settings)
 
-    effective_model = _resolve_effective_model(space, settings)
+    effective_model = resolve_model_name(space, settings)
+    provider = resolve_provider(space, settings)
 
     schema_markdown = await storage.read_page(space_id, "schema.md") or ""
     index_markdown = await storage.read_page(space_id, "index.md") or "(empty)"
 
-    route_response = await llm.chat(
-        [
-            LLMMessage(role="system", content=SYSTEM_QUERY_ROUTE),
-            LLMMessage(
-                role="user", content=query_route_user_prompt(index_markdown=index_markdown, question=request.question)
-            ),
-        ],
-        temperature=0.0,
+    route_result = await query_route_agent.run(
+        query_route_user_prompt(index_markdown=index_markdown, question=request.question),
+        model=model,
+        model_settings=model_settings_for(space, settings, temperature=0.0),
     )
     await record_usage(
         tenant_id=space.tenant_id,
         space_id=space.id,
         operation=Operation.QUERY_ROUTE,
         model=effective_model,
-        usage=dict(route_response.usage or {}),
+        usage=usage_to_dict(route_result.usage, provider=provider),
     )
-    route_data = parse(route_response.content)
-    if not isinstance(route_data, dict):
-        raise LLMJSONError("query routing expected a JSON object")
-    pages_to_load = [str(p).removesuffix(".md") for p in route_data.get("pages_to_load") or []][: request.max_pages]
-    reasoning = route_data.get("reasoning")
+    route_out: RouteOut = route_result.output
+    pages_to_load = [str(p).removesuffix(".md") for p in route_out.pages_to_load][: request.max_pages]
+    reasoning = route_out.reasoning
 
     pages_loaded: list[dict] = []
     for path in pages_to_load:
@@ -113,28 +120,23 @@ async def answer_question(
             reasoning=reasoning,
         )
 
-    answer_response = await llm.chat(
-        [
-            LLMMessage(role="system", content=SYSTEM_QUERY_ANSWER),
-            LLMMessage(
-                role="user",
-                content=query_answer_user_prompt(
-                    schema_markdown=schema_markdown,
-                    pages=pages_loaded,
-                    question=request.question,
-                ),
-            ),
-        ],
-        temperature=0.2,
+    answer_result = await query_answer_agent.run(
+        query_answer_user_prompt(
+            schema_markdown=schema_markdown,
+            pages=pages_loaded,
+            question=request.question,
+        ),
+        model=model,
+        model_settings=model_settings_for(space, settings, temperature=0.2),
     )
     await record_usage(
         tenant_id=space.tenant_id,
         space_id=space.id,
         operation=Operation.QUERY_ANSWER,
         model=effective_model,
-        usage=dict(answer_response.usage or {}),
+        usage=usage_to_dict(answer_result.usage, provider=provider),
     )
-    answer = answer_response.content.strip()
+    answer = answer_result.output.strip()
 
     cited_pages = sorted({m.group(1).removesuffix(".md") for m in _WIKILINK_RE.finditer(answer)})
     cited_sources = await _resolve_cited_sources(space_id, cited_pages)
@@ -146,15 +148,6 @@ async def answer_question(
         cited_sources=cited_sources,
         reasoning=reasoning,
     )
-
-
-def _resolve_effective_model(space: Space, settings: "Settings") -> str:
-    cfg = space.llm_config
-    if cfg.model:
-        return cfg.model
-    if cfg.mode == LLMMode.HOSTED:
-        return settings.hosted_default_model
-    return settings.default_llm_model
 
 
 async def _resolve_cited_sources(space_id: str, cited_pages: list[str]) -> list[CitedSource]:

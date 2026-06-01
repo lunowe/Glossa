@@ -26,11 +26,15 @@ The entire domain is five objects:
 | **Job** | One async op (`ingest`, `lint`, `reindex`) with a `status` + `result`. `id` = `job_…` |
 | **Webhook** | Host integration callback, Stripe-style signed. `id` = `wh_…` |
 
-…and three pluggable interfaces:
+…and two pluggable interfaces:
 
 - **`StorageBackend`** — where pages live (MinIO today; in-memory for tests; FS/S3 later).
-- **`LLMDriver`** — who runs inference (`byo` = any OpenAI-compatible endpoint; `hosted` = Anthropic, **stubbed**).
 - **`SourceProvider`** *(implicit)* — push (content stored), pull (`fetch_callback` lets the host stay system of record), url (a pasted link, fetched + converted to markdown), or upload (a document parsed to text with LiteParse).
+
+LLM inference runs through **Pydantic AI** and is provider-agnostic: set
+`llm_config.provider` on a space to `"openai"`, `"anthropic"`, or any other
+Pydantic AI provider. The legacy `mode=byo` (OpenAI-compatible endpoint) and
+`mode=hosted` (Anthropic with thinking + prompt caching) both continue to work.
 
 The API surface, the 5-object model, the bucket layout, and the webhook
 signature format are the **stable contract**. Everything behind it (pipeline
@@ -51,9 +55,11 @@ POST /spaces/{id}/lint                         → queue a lint Job (orphans / b
 ```
 
 **Ingest** (one source at a time per space): fetch content → one LLM call
-extracts `{entities, summary, log_blurb}` → for each entity, read the existing
-page and LLM-merge the new claims → write a deterministic `summaries/src-<id>`
-page → regenerate `index.md` → append a line to `log.md` → fire webhooks.
+extracts `{entities, summary, log_blurb}` → write a deterministic
+`summaries/src-<id>` page → run the agentic **wiki maintainer** (surgical
+section/substring edits, dedup via search, synthesis pages, under configurable
+caps) → deterministic flush → regenerate `index.md` → append a line to `log.md`
+→ fire webhooks.
 
 **Query** makes two LLM calls: *route* (pick ≤8 pages from `index.md`) then
 *answer* (write markdown with `[[path]]` citations). Citations resolve back to
@@ -79,10 +85,11 @@ token needed, every request gets a synthetic admin context, and the local toolin
 (MCP server, Obsidian sync) works tokenless. Set `GLOSSA_AUTH_REQUIRED=true` and
 issue real `glsk_live_…` keys to enforce tenants.
 
-Config lives in `glossa/config.py`; copy `.env.example` → `.env` to start. You
-need a BYO LLM endpoint — set `GLOSSA_DEFAULT_LLM_ENDPOINT` (any OpenAI-compatible
-URL), `GLOSSA_DEFAULT_LLM_MODEL`, and `GLOSSA_DEFAULT_LLM_API_KEY`, or set
-`llm_config` per space.
+Config lives in `glossa/config.py`; copy `.env.example` → `.env` to start. For
+an OpenAI-compatible endpoint set `GLOSSA_DEFAULT_LLM_ENDPOINT`,
+`GLOSSA_DEFAULT_LLM_MODEL`, and `GLOSSA_DEFAULT_LLM_API_KEY`. For Anthropic set
+`GLOSSA_HOSTED_ANTHROPIC_API_KEY` and use `llm_config.provider = "anthropic"` (or
+`mode = "hosted"`) on the space. You can also override `llm_config` per space.
 
 Tests / lint / format (run before committing):
 
@@ -312,7 +319,6 @@ wikilinks use the logical path. `aws s3 sync` it anywhere — the wiki travels.
 v0.1 functional MVP. The contract — API surface, bucket layout, 5-object model,
 webhook signature — is stable. Known gaps:
 
-- **Hosted `LLMDriver` is stubbed** — only `byo` (OpenAI-compatible) works.
 - No content chunking for very long sources (capped at
   `GLOSSA_INGEST_MAX_SOURCE_CHARS`, default 200k — longer is truncated).
 - **Document upload** parses PDFs natively; Office formats need LibreOffice,

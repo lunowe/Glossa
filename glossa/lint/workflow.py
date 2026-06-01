@@ -23,15 +23,16 @@ from glossa.db.client import get_db
 from glossa.ingest import webhook_delivery
 from glossa.lint import report_writer, scanner
 from glossa.lint.contradictions import check_page_for_contradictions
-from glossa.llm import build_driver
+from glossa.llm import build_model, resolve_model_name, resolve_provider
 from glossa.models.job import Job, JobKind, JobResult, JobStatus
-from glossa.models.space import LLMMode, Space
+from glossa.models.space import Space
 from glossa.models.webhook import WebhookEvent
 from glossa.usage import Operation, record_usage
 
 if TYPE_CHECKING:
+    from pydantic_ai.models import Model
+
     from glossa.config import Settings
-    from glossa.llm.base import LLMDriver
     from glossa.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
@@ -57,7 +58,7 @@ async def enqueue_lint(*, space_id: str, app: FastAPI) -> Job:
             space_id=space_id,
             storage=storage,
             settings=settings,
-            llm=None,
+            model=None,
         )
     )
     track_background_task(task)
@@ -70,7 +71,7 @@ async def _run_lint_safely(
     space_id: str,
     storage: "StorageBackend",
     settings: "Settings",
-    llm: "LLMDriver | None",
+    model: "Model | None",
 ) -> None:
     try:
         await run_lint(
@@ -78,7 +79,7 @@ async def _run_lint_safely(
             space_id=space_id,
             storage=storage,
             settings=settings,
-            llm=llm,
+            model=model,
         )
     except Exception as e:
         logger.exception("lint job %s failed", job_id)
@@ -96,7 +97,7 @@ async def run_lint(
     space_id: str,
     storage: "StorageBackend",
     settings: "Settings",
-    llm: "LLMDriver | None" = None,
+    model: "Model | None" = None,
 ) -> JobResult:
     async with lock_for_space(space_id):
         return await _run_lint_inner(
@@ -104,7 +105,7 @@ async def run_lint(
             space_id=space_id,
             storage=storage,
             settings=settings,
-            llm=llm,
+            model=model,
         )
 
 
@@ -114,7 +115,7 @@ async def _run_lint_inner(
     space_id: str,
     storage: "StorageBackend",
     settings: "Settings",
-    llm: "LLMDriver | None",
+    model: "Model | None",
 ) -> JobResult:
     db = get_db()
     started_at = datetime.now(UTC)
@@ -144,16 +145,18 @@ async def _run_lint_inner(
 
     pages_with_llm_check = 0
     if pages and any(len(p.source_refs) >= 2 for p in pages):
-        if llm is None:
-            llm = build_driver(space, settings)
-        effective_model = _resolve_effective_model(space, settings)
+        if model is None:
+            model = build_model(space, settings)
+        provider = resolve_provider(space, settings)
+        effective_model = resolve_model_name(space, settings)
 
         for page in pages:
             if len(page.source_refs) < 2:
                 continue
             pages_with_llm_check += 1
             contradiction_findings, usage = await check_page_for_contradictions(
-                llm=llm,
+                model=model,
+                provider=provider,
                 storage=storage,
                 space_id=space_id,
                 schema_markdown=schema_markdown,
@@ -231,15 +234,6 @@ async def _run_lint_inner(
         payload={"job_id": job_id, "kind": JobKind.LINT.value, "result": result.model_dump()},
     )
     return result
-
-
-def _resolve_effective_model(space: Space, settings: "Settings") -> str:
-    cfg = space.llm_config
-    if cfg.model:
-        return cfg.model
-    if cfg.mode == LLMMode.HOSTED:
-        return settings.hosted_default_model
-    return settings.default_llm_model
 
 
 async def _mark_job_failed(job_id: str, error_message: str) -> None:
