@@ -91,3 +91,31 @@ class MinioStorageBackend(StorageBackend):
             if obj.object_name:
                 results.append(obj.object_name[len(f"{space_id}/") :])
         return results
+
+    async def write_asset(self, space_id: str, path: str, data: bytes, content_type: str) -> None:
+        await asyncio.to_thread(self._write_asset_sync, space_id, path, data, content_type)
+
+    def _write_asset_sync(self, space_id: str, path: str, data: bytes, content_type: str) -> None:
+        self._client.put_object(
+            self._bucket,
+            self._key(space_id, path),
+            io.BytesIO(data),
+            length=len(data),
+            content_type=content_type or "application/octet-stream",
+        )
+
+    async def read_asset(self, space_id: str, path: str) -> bytes:
+        return await asyncio.to_thread(self._read_asset_sync, space_id, path)
+
+    def _read_asset_sync(self, space_id: str, path: str) -> bytes:
+        try:
+            response = self._client.get_object(self._bucket, self._key(space_id, path))
+            try:
+                return response.read()
+            finally:
+                response.close()
+                response.release_conn()
+        except S3Error as e:
+            if e.code == "NoSuchKey":
+                raise FileNotFoundError(f"asset not found: {self._key(space_id, path)}") from e
+            raise

@@ -11,3 +11,8 @@ python-multipart
 jinja2>=3.1
 anthropic>=0.92.0
 mcp>=1.27.1
+# Link ingestion: fetch a URL and extract readable main content as markdown.
+trafilatura
+# Document upload: local, no-API-key document parser (PDF/DOCX/PPTX/…).
+# Office formats need LibreOffice; images need ImageMagick; OCR needs Tesseract.
+liteparse

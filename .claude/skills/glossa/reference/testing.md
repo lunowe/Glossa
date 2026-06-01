@@ -126,6 +126,7 @@ use `auth_required=False` for the synthetic-admin path. See `tests/test_auth.py`
 | Adding/Changing | Look at | Assert on |
 |---|---|---|
 | Ingest | `test_ingest.py` | pages in storage, DB Page docs, `index.md`/`log.md`, `llm.calls` |
+| URL / upload ingest | `test_ingest_url_upload.py` | monkeypatch `url_fetcher.fetch_url_as_markdown` / `doc_parser.parse_asset_to_text` (never hit the network or LiteParse); `storage.write_asset`/`read_asset`; the upload HTTP route |
 | Query | `test_query.py` | `pages_consulted`, `cited_pages`, `cited_sources` |
 | Lint | `test_lint.py` | `lint_findings`, `lint_summary`, `lint_report.md` |
 | Auth/scopes/isolation | `test_auth.py`, `test_tenant_isolation.py` | 401/403/404, synthetic admin, bootstrap |

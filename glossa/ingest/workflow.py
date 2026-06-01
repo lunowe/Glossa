@@ -156,7 +156,9 @@ async def _run_ingest_inner(
     )
 
     schema_markdown = await storage.read_page(space_id, "schema.md") or ""
-    source_content = await source_fetcher.fetch_content(source, settings.ingest_max_source_chars)
+    source_content = await source_fetcher.fetch_content(
+        source, settings.ingest_max_source_chars, storage=storage, settings=settings
+    )
 
     extraction = await extract_from_source(
         llm=llm,

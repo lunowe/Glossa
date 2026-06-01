@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     hosted_enable_thinking: bool = True
 
     ingest_max_source_chars: int = 200_000
+    # Document upload (upload-mode sources, parsed with LiteParse during ingest).
+    ingest_max_upload_bytes: int = 25_000_000  # 25 MB cap on a single uploaded file
+    liteparse_ocr_enabled: bool = False
+    # Link ingestion (url-mode sources, fetched + converted to markdown during ingest).
+    url_fetch_timeout_seconds: float = 30.0
+    url_fetch_user_agent: str = "GlossaBot/0.1 (+https://github.com/glossa/glossa)"
 
     auth_required: bool = False
     bootstrap_admin_api_key: str | None = None

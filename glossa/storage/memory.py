@@ -10,6 +10,7 @@ DEFAULT_LOG = "# Log\n\n"
 class InMemoryStorageBackend(StorageBackend):
     def __init__(self) -> None:
         self.files: dict[str, str] = {}
+        self.assets: dict[str, bytes] = {}
 
     def _key(self, space_id: str, path: str) -> str:
         return f"{space_id}/{path.lstrip('/')}"
@@ -35,3 +36,12 @@ class InMemoryStorageBackend(StorageBackend):
         full_prefix = self._key(space_id, prefix)
         space_prefix = f"{space_id}/"
         return [key[len(space_prefix) :] for key in self.files if key.startswith(full_prefix)]
+
+    async def write_asset(self, space_id: str, path: str, data: bytes, content_type: str) -> None:
+        self.assets[self._key(space_id, path)] = data
+
+    async def read_asset(self, space_id: str, path: str) -> bytes:
+        key = self._key(space_id, path)
+        if key not in self.assets:
+            raise FileNotFoundError(f"asset not found: {key}")
+        return self.assets[key]

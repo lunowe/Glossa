@@ -56,14 +56,26 @@ All app routers are mounted in `glossa/main.py`; per-endpoint logic lives under
 | Method | Path | Body / params | Returns |
 |---|---|---|---|
 | POST | `/spaces/{space_id}/sources` | `SourceCreate` | `Source` (402 if `max_sources_per_space` exceeded) |
+| POST | `/spaces/{space_id}/sources/upload` | multipart form (see below) | `Source` (`upload` mode; 402 quota, 413 too large) |
 | GET | `/spaces/{space_id}/sources` | `?limit=50&offset=0` | `list[Source]` |
 | GET | `/spaces/{space_id}/sources/{source_id}` | — | `Source` |
 | POST | `/spaces/{space_id}/sources/{source_id}/ingest` | (no body) | `Job` (queued; 402 on cost/token quota) |
 
-**`SourceCreate`**: `title` (req), `ingestion_mode` (`"push"` \| `"pull"`, req),
-`content_inline?` (**required when push**), `fetch_callback?` (**required when
-pull**: `{url, method="GET", headers={}, auth_ref?}`), `external_uri?`,
-`metadata?` (dict). Validation enforces the push/pull ↔ content/callback pairing.
+**`SourceCreate`**: `title` (req), `ingestion_mode` (`"push"` \| `"pull"` \|
+`"url"`, req), `content_inline?` (**required when push**), `fetch_callback?`
+(**required when pull**: `{url, method="GET", headers={}, auth_ref?}`),
+`external_uri?` (**required when url** — the link to fetch; also the citation
+link-back), `metadata?` (dict). Validation enforces the push/pull/url pairing;
+`"upload"` is **rejected here** (use the upload route).
+
+**Upload** (`POST …/sources/upload`, `multipart/form-data`): fields `file`
+(required, the document), `title?` (defaults to the filename), `external_uri?`,
+`metadata?` (JSON-object string). Stores the raw bytes as a storage asset
+(`assets/src-<id>/<file>`) and returns an `upload`-mode `Source`; **call
+`…/ingest` next** — LiteParse parses the file to text during that job. **413** if
+the file exceeds `GLOSSA_INGEST_MAX_UPLOAD_BYTES`; **400** if empty; **422** if
+`metadata` isn't a JSON object. Supported types track LiteParse (PDF native; Office
+needs LibreOffice, images need ImageMagick, OCR needs Tesseract).
 
 ## Pages — `glossa/routes/pages.py`
 

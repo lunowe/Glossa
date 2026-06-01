@@ -27,8 +27,12 @@ async; implement these to add a backend (`MinioStorageBackend`,
 - `write_page(space_id, path, content) -> None` — create/overwrite (UTF-8, `text/markdown`).
 - `delete_page(space_id, path) -> None` — idempotent.
 - `list_pages(space_id, prefix="pages/") -> list[str]` — recursive, relative paths.
+- `write_asset(space_id, path, data: bytes, content_type) -> None` — store raw
+  binary (uploaded documents) under `assets/…`, outside the `pages/` markdown
+  namespace so they never surface in `list_pages`.
+- `read_asset(space_id, path) -> bytes` — raises `FileNotFoundError` if absent.
 
-To add (e.g. local FS or raw S3): subclass `StorageBackend`, implement all six,
+To add (e.g. local FS or raw S3): subclass `StorageBackend`, implement all eight,
 and swap the construction in `main.py`'s lifespan (or make it settings-driven).
 
 ### LLMDriver — `glossa/llm/base.py`
@@ -59,8 +63,14 @@ Pipelines obtain their driver via `from glossa.llm import build_driver`.
 (tracked via `track_background_task`). `run_ingest(...)` acquires the per-space
 lock and runs, updating the Job after each phase:
 
-1. **Fetch** — `source_fetcher.fetch_content(source, max_chars)` (inline for push,
-   `fetch_callback` HTTP for pull; truncates at `GLOSSA_INGEST_MAX_SOURCE_CHARS`).
+1. **Fetch** — `source_fetcher.fetch_content(source, max_chars, *, storage,
+   settings)` dispatches on `ingestion_mode` → a plain string, truncated at
+   `GLOSSA_INGEST_MAX_SOURCE_CHARS`: **push** = `content_inline`; **pull** =
+   `fetch_callback` HTTP; **url** = `url_fetcher.fetch_url_as_markdown` (httpx GET
+   + `trafilatura` readable-content→markdown, single page); **upload** =
+   `storage.read_asset(asset_path)` → `doc_parser.parse_asset_to_text` (LiteParse,
+   off-loop). `url_fetcher`/`doc_parser` import their third-party deps lazily and
+   wrap failures as `SourceFetchError`.
 2. **Extract (LLM #1)** — `extract.extract_from_source(...)` → JSON
    `{entities[], source_summary_markdown, log_blurb}`; records
    `Operation.INGEST_EXTRACT` usage.

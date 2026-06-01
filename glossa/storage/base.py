@@ -26,3 +26,18 @@ class StorageBackend(ABC):
 
     @abstractmethod
     async def list_pages(self, space_id: str, prefix: str = "pages/") -> list[str]: ...
+
+    @abstractmethod
+    async def write_asset(self, space_id: str, path: str, data: bytes, content_type: str) -> None:
+        """Store raw binary content (e.g. an uploaded document) at ``path``.
+
+        Assets live under ``assets/…`` and are intentionally outside the
+        ``pages/`` markdown namespace, so they never surface in
+        ``list_pages('pages/')`` or get treated as wiki pages.
+        """
+        ...
+
+    @abstractmethod
+    async def read_asset(self, space_id: str, path: str) -> bytes:
+        """Read raw binary content. Raises ``FileNotFoundError`` if absent."""
+        ...

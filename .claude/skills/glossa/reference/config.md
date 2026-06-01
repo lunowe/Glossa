@@ -47,6 +47,18 @@ Per-space `llm_config.api_key_ref` may be `"env:OPENAI_API_KEY"` /
 | Env var | Default | Meaning |
 |---|---|---|
 | `GLOSSA_INGEST_MAX_SOURCE_CHARS` | `200000` | Single source cap (no chunking yet — longer is truncated) |
+| `GLOSSA_INGEST_MAX_UPLOAD_BYTES` | `25000000` | Max bytes for a single `upload`-mode file (413 if exceeded) |
+| `GLOSSA_LITEPARSE_OCR_ENABLED` | `false` | Enable LiteParse OCR (Tesseract) for scanned uploads |
+| `GLOSSA_URL_FETCH_TIMEOUT_SECONDS` | `30` | HTTP timeout when fetching a `url`-mode link |
+| `GLOSSA_URL_FETCH_USER_AGENT` | `GlossaBot/0.1 (+…)` | User-Agent sent when fetching `url`-mode links |
+
+`url`-mode ingestion uses **`trafilatura`** (fetch + readable-content→markdown);
+`upload`-mode uses **`liteparse`** (`run-llama/liteparse`, local, no API key) to
+parse documents to text. Both are in `requirements.txt`; their imports are lazy,
+so the rest of Glossa (and the test suite) runs without them installed. LiteParse
+parses PDFs natively but needs **LibreOffice** (Office formats), **ImageMagick**
+(images), and **Tesseract** (OCR) on the host — the `Dockerfile` installs all
+three; drop that apt layer for a smaller PDF-only image.
 
 ## Auth modes
 

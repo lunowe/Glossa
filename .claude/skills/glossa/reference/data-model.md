@@ -16,11 +16,20 @@ IDs are `{prefix}_{uuid4().hex[:12]}` (or `secrets.token_urlsafe` for tokens).
 
 ### Source — `glossa/models/source.py`
 `id` (`src_…`), `space_id`, `title`, `ingestion_mode: SourceIngestionMode`
-(`push`\|`pull`), `content_inline?` (push), `fetch_callback?: FetchCallback`
-(pull), `external_uri?`, `metadata: dict`, `status: SourceStatus`
-(`received`→`ingesting`→`done`\|`failed`, default `received`), `created_at`,
-`last_ingested_at?`, `last_ingest_job_id?`.
+(`push`\|`pull`\|`url`\|`upload`), `content_inline?` (push), `fetch_callback?:
+FetchCallback` (pull), `external_uri?` (the link to fetch for `url` mode; also the
+citation link-back), `asset_path?` (storage-relative path of the uploaded raw
+file for `upload` mode, e.g. `assets/src-<id>/report.pdf`), `metadata: dict`,
+`status: SourceStatus` (`received`→`ingesting`→`done`\|`failed`, default
+`received`), `created_at`, `last_ingested_at?`, `last_ingest_job_id?`.
 - **`FetchCallback`**: `url`, `method` (`"GET"`), `headers: dict`, `auth_ref?`.
+- **The four ingestion modes** all resolve to a plain-text string fed to the same
+  extract pipeline (`glossa/ingest/source_fetcher.fetch_content`): `push` =
+  `content_inline`; `pull` = host `fetch_callback`; `url` = fetch the link and
+  convert its readable content to markdown (single page, no crawl); `upload` =
+  parse the stored raw file to text with LiteParse. `upload` sources are created
+  via the dedicated upload route (not `SourceCreate`), which stores
+  `filename`/`content_type`/`byte_size` in `metadata`.
 
 ### Page — `glossa/models/page.py`
 `space_id`, `path`, `kind: PageKind`, `title`, `frontmatter: dict`,
