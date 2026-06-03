@@ -31,11 +31,12 @@ The entire domain is five objects:
 - **`StorageBackend`** — where pages live (MinIO today; in-memory for tests; FS/S3 later).
 - **`SourceProvider`** *(implicit)* — push (content stored), pull (`fetch_callback` lets the host stay system of record), url (a pasted link, fetched + converted to markdown), or upload (a document parsed to text with LiteParse).
 
-LLM inference runs through **Pydantic AI** and is provider-agnostic: set
-`llm_config.provider` on a space to `"openai"`, `"anthropic"`, or another
-supported Pydantic AI provider. OpenAI-compatible endpoints use
-`llm_config.base_url` or `GLOSSA_DEFAULT_LLM_ENDPOINT`; Anthropic uses
-`llm_config.provider = "anthropic"`.
+LLM inference runs through **Pydantic AI** with five providers — `anthropic`,
+`openai` (incl. any OpenAI-compatible endpoint), `gemini`, `bedrock`, and
+`vertex`. Set one default with `GLOSSA_DEFAULT_LLM_PROVIDER` +
+`GLOSSA_DEFAULT_LLM_MODEL`, give each provider you use its own key
+(`GLOSSA_ANTHROPIC_API_KEY`, `GLOSSA_OPENAI_API_KEY`, `GLOSSA_GEMINI_API_KEY`,
+AWS/Bedrock or Vertex creds), and override per-space via `llm_config.provider`.
 
 The API surface, the 5-object model, the bucket layout, and the webhook
 signature format are the **stable contract**. Everything behind it (pipeline
@@ -95,12 +96,15 @@ token needed, every request gets a synthetic admin context, and the local toolin
 (MCP server, Obsidian sync) works tokenless. Set `GLOSSA_AUTH_REQUIRED=true` and
 issue real `glsk_live_…` keys to enforce tenants.
 
-Config lives in `glossa/config.py`; copy `.env.example` → `.env` to start. For
-an OpenAI-compatible endpoint set `GLOSSA_DEFAULT_LLM_ENDPOINT`,
-`GLOSSA_DEFAULT_LLM_MODEL`, and `GLOSSA_DEFAULT_LLM_API_KEY`. For Anthropic set
-`GLOSSA_ANTHROPIC_API_KEY`, `GLOSSA_DEFAULT_LLM_PROVIDER=anthropic`, and an
-Anthropic-compatible `GLOSSA_DEFAULT_LLM_MODEL`; or override `llm_config` per
-space with `provider`, `model`, `base_url`, and `api_key_ref`.
+Config lives in `glossa/config.py`; copy `.env.example` → `.env` to start. Pick a
+default with `GLOSSA_DEFAULT_LLM_PROVIDER` (`anthropic` | `openai` | `gemini` |
+`bedrock` | `vertex`) + `GLOSSA_DEFAULT_LLM_MODEL`, then set the key for that
+provider: `GLOSSA_ANTHROPIC_API_KEY`, `GLOSSA_OPENAI_API_KEY` (+ optional
+`GLOSSA_OPENAI_BASE_URL` for OpenAI-compatible servers), `GLOSSA_GEMINI_API_KEY`,
+`GLOSSA_AWS_REGION` + AWS creds / `GLOSSA_BEDROCK_API_KEY`, or
+`GLOSSA_VERTEX_PROJECT`/`_LOCATION` (+ a service-account file or ADC). Override
+per-space via `llm_config` (`provider`, `model`, `base_url`, `api_key_ref`). See
+`.claude/skills/glossa/reference/config.md` for the full table.
 
 Tests / lint / format (run before committing):
 

@@ -19,35 +19,56 @@ illustrative placeholders; the code defaults are below.
 | `GLOSSA_API_HOST` | `0.0.0.0` | Bind host |
 | `GLOSSA_API_PORT` | `8200` | Bind port |
 
-## LLM — provider-agnostic (Pydantic AI)
+## LLM (all inference via Pydantic AI)
 
-All inference runs through **Pydantic AI** (`pydantic-ai-slim[openai,anthropic]`).
-A space selects a provider via `llm_config.provider`; if unset, the legacy
-`mode`/`endpoint` fields apply. More providers need the matching extra installed
-(e.g. `pydantic-ai-slim[google]`).
+All inference runs through **Pydantic AI**. There are exactly **five providers**,
+each keyed by its own `GLOSSA_*` setting. Pick one default provider + model; a
+space overrides per-space via `llm_config` (precedence: `llm_config.provider` →
+`GLOSSA_DEFAULT_LLM_PROVIDER`). The `google`/`bedrock` SDKs are imported lazily in
+`glossa/llm/models.py`, so trimming an extra in `requirements.txt` only disables
+that one provider.
+
+| Provider | model class | default auth setting(s) |
+|---|---|---|
+| `anthropic` | `AnthropicModel` | `GLOSSA_ANTHROPIC_API_KEY` |
+| `openai` | `OpenAIChatModel` | `GLOSSA_OPENAI_API_KEY` (+ `GLOSSA_OPENAI_BASE_URL`) |
+| `gemini` | `GoogleModel` (GLA) | `GLOSSA_GEMINI_API_KEY` |
+| `bedrock` | `BedrockConverseModel` | `GLOSSA_AWS_*` / `GLOSSA_BEDROCK_API_KEY` (+ `GLOSSA_AWS_REGION`) |
+| `vertex` | `GoogleModel` (Vertex) | `GLOSSA_VERTEX_PROJECT` / `_LOCATION` / `_SERVICE_ACCOUNT_FILE` |
+
+### Default selection
 
 | Env var | Default | Meaning |
 |---|---|---|
-| `GLOSSA_DEFAULT_LLM_PROVIDER` | `openai` | Pydantic AI provider for spaces that don't set `llm_config.provider` (`openai` covers any OpenAI-compatible endpoint) |
-| `GLOSSA_DEFAULT_LLM_MODE` | `byo` | Legacy default mode (`byo`\|`hosted`); used when `provider` is unset |
-| `GLOSSA_DEFAULT_LLM_ENDPOINT` | `None` | OpenAI-compatible base URL; required for the openai provider unless the space sets its own |
-| `GLOSSA_DEFAULT_LLM_MODEL` | `gpt-4o-mini` | Fallback model name |
-| `GLOSSA_DEFAULT_LLM_API_KEY` | `None` | Fallback API key |
+| `GLOSSA_DEFAULT_LLM_PROVIDER` | `openai` | Provider for spaces that don't set `llm_config.provider`; one of the five above |
+| `GLOSSA_DEFAULT_LLM_MODEL` | `gpt-4o-mini` | Model for spaces that don't set `llm_config.model` |
 
-## LLM — hosted (Anthropic; fully functional)
+### Per-provider keys
 
 | Env var | Default | Meaning |
 |---|---|---|
-| `GLOSSA_HOSTED_ANTHROPIC_API_KEY` | `None` | Required when provider is `anthropic` (or `mode=hosted`) |
-| `GLOSSA_HOSTED_DEFAULT_MODEL` | `claude-opus-4-7` | Model name for Anthropic spaces |
-| `GLOSSA_HOSTED_DEFAULT_EFFORT` | `high` | Thinking effort level |
-| `GLOSSA_HOSTED_DEFAULT_MAX_TOKENS` | `16000` | Max output tokens |
-| `GLOSSA_HOSTED_ENABLE_THINKING` | `true` | Enable adaptive thinking (Anthropic only) |
+| `GLOSSA_ANTHROPIC_API_KEY` | `None` | Key for the `anthropic` provider |
+| `GLOSSA_OPENAI_API_KEY` | `None` | Key for the `openai` provider |
+| `GLOSSA_OPENAI_BASE_URL` | `None` | OpenAI-compatible base URL (Azure, OpenRouter, Groq, vLLM, Ollama, …); unset = `api.openai.com` |
+| `GLOSSA_GEMINI_API_KEY` | `None` | Key for the `gemini` provider (Google Gemini Developer API / AI Studio) |
+| `GLOSSA_AWS_REGION` | `None` | AWS region for `bedrock` (**required** for that provider) |
+| `GLOSSA_AWS_ACCESS_KEY_ID` / `_SECRET_ACCESS_KEY` / `_SESSION_TOKEN` | `None` | Static AWS creds; if all unset, the host's default AWS credential chain is used |
+| `GLOSSA_BEDROCK_API_KEY` | `None` | Bedrock bearer token (alternative to AWS creds) |
+| `GLOSSA_VERTEX_PROJECT` / `GLOSSA_VERTEX_LOCATION` | `None` | GCP project + region for `vertex` |
+| `GLOSSA_VERTEX_SERVICE_ACCOUNT_FILE` | `None` | Path to a service-account JSON; unset = Application Default Credentials |
 
-Set `llm_config.provider = "anthropic"` on a space (or use the legacy
-`mode=hosted`) to route that space through Anthropic with thinking + prompt
-caching. Per-space `llm_config.api_key_ref` may be `"env:OPENAI_API_KEY"` /
-`"env:ANTHROPIC_API_KEY"`; provide those keys in the environment too. See
+### Anthropic-only tuning
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `GLOSSA_ANTHROPIC_EFFORT` | `high` | Thinking effort level |
+| `GLOSSA_ANTHROPIC_MAX_TOKENS` | `16000` | Max output tokens |
+| `GLOSSA_ANTHROPIC_ENABLE_THINKING` | `true` | Enable adaptive thinking + prompt caching |
+
+A space's `llm_config.api_key_ref` (`"env:VAR"` or a literal) overrides the
+per-provider key when set; otherwise the resolved provider's `GLOSSA_*` key is
+used. For Bedrock, per-space `llm_config.extra.region`; for Vertex,
+`llm_config.extra.{project,location}` override the settings defaults. See
 `reference/internals.md` § Model layer for resolution precedence.
 
 ## Ingest
@@ -120,12 +141,12 @@ Register these provider callbacks with each IdP:
 `${GLOSSA_BASE_URL}/auth/github/callback`. On first sign-in Glossa creates a
 `User`, a starter tenant (`"{name}'s Workspace"`), and an `owner` membership.
 
-## Provider keys (for per-space `api_key_ref`)
+## Per-space `api_key_ref`
 
-| Env var | Meaning |
-|---|---|
-| `OPENAI_API_KEY` | Referenced by `api_key_ref: "env:OPENAI_API_KEY"` |
-| `ANTHROPIC_API_KEY` | Referenced by `api_key_ref: "env:ANTHROPIC_API_KEY"` |
+The five `GLOSSA_*_API_KEY` settings above cover the common case. A space only
+needs `llm_config.api_key_ref` when it wants a *different* key than its provider's
+default — e.g. `api_key_ref: "env:CUSTOMER_42_OPENAI_KEY"` reading from an extra
+environment variable you define, or a literal key string.
 
 ## Self-hosting notes
 

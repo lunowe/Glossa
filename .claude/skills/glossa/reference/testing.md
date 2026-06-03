@@ -26,9 +26,10 @@ and ruff. Tests relax some lints (`tests/** = ["T20","F821","F811","B020"]`), so
   `AsyncMongoMockClient` (`glossa_test` DB) for the test, then tears down. Get the
   handle with `from glossa.db.client import get_db; db = get_db()`.
 - **`storage`** — a fresh `InMemoryStorageBackend()`.
-- **`settings`** — a `Settings()` with `GLOSSA_DEFAULT_LLM_ENDPOINT=http://test/v1`
-  and `GLOSSA_DEFAULT_LLM_API_KEY=test-key` monkeypatched in. Add more
-  `monkeypatch.setenv(...)` in your own fixtures/tests for other config.
+- **`settings`** — a `Settings()` with `GLOSSA_DEFAULT_LLM_PROVIDER=openai`,
+  `GLOSSA_OPENAI_BASE_URL=http://test/v1`, and `GLOSSA_OPENAI_API_KEY=test-key`
+  monkeypatched in. Add more `monkeypatch.setenv(...)` in your own fixtures/tests
+  for other config.
 
 ## Driving Pydantic AI agents in tests
 

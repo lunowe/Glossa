@@ -36,8 +36,8 @@ def _space(cfg: LLMConfig) -> Space:
 def _settings(**kw) -> Settings:
     base = dict(
         _env_file=None,
-        default_llm_endpoint="http://local/v1",
-        default_llm_api_key="k",
+        openai_base_url="http://local/v1",
+        openai_api_key="k",
         anthropic_api_key="sk-ant",
     )
     base.update(kw)
@@ -74,17 +74,33 @@ def test_provider_openai_with_base_url_builds_openai():
 
 def test_anthropic_without_key_raises():
     with pytest.raises(ValueError, match="Anthropic requires an API key"):
-        build_model(
-            _space(LLMConfig(provider="anthropic")), _settings(anthropic_api_key=None, default_llm_api_key=None)
-        )
+        build_model(_space(LLMConfig(provider="anthropic")), _settings(anthropic_api_key=None))
 
 
 def test_openai_without_key_or_base_url_raises():
-    with pytest.raises(ValueError, match="OpenAI provider requires"):
+    with pytest.raises(ValueError, match="OpenAI requires"):
         build_model(
             _space(LLMConfig(provider="openai")),
-            _settings(default_llm_endpoint=None, default_llm_api_key=None),
+            _settings(openai_base_url=None, openai_api_key=None),
         )
+
+
+def test_gemini_without_key_raises():
+    # Validated before the (lazily imported) google SDK is touched, so this passes
+    # whether or not google-genai is installed.
+    with pytest.raises(ValueError, match="Gemini requires an API key"):
+        build_model(_space(LLMConfig(provider="gemini")), _settings(gemini_api_key=None))
+
+
+def test_bedrock_without_region_raises():
+    # Validated before the (lazily imported) boto3 SDK is touched.
+    with pytest.raises(ValueError, match="Bedrock requires an AWS region"):
+        build_model(_space(LLMConfig(provider="bedrock")), _settings(aws_region=None))
+
+
+def test_unknown_provider_raises():
+    with pytest.raises(ValueError, match="Unknown LLM provider"):
+        build_model(_space(LLMConfig(provider="does-not-exist")), _settings())
 
 
 # --- resolution helpers ----------------------------------------------------

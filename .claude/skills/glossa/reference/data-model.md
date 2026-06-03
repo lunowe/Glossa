@@ -10,19 +10,20 @@ IDs are `{prefix}_{uuid4().hex[:12]}` (or `secrets.token_urlsafe` for tokens).
 `id` (`gls_…`), `tenant_id`, `name`, `slug`, `bucket_uri` (`s3://<bucket>/<space_id>/`),
 `schema_path` (default `"schema.md"`), `llm_config: LLMConfig`, `stats: SpaceStats`,
 `created_at`, `updated_at`.
-- **`LLMConfig`** — provider-agnostic (preferred) + legacy back-compat:
-  - `provider?: str` — Pydantic AI provider name (`"openai"`, `"anthropic"`,
-    `"google"`, `"groq"`, …). When set, takes precedence over `mode`.
-  - `base_url?: str` — OpenAI-compatible base URL (preferred over legacy
-    `endpoint`).
-  - `model?: str`, `api_key_ref?: str` (`"env:VAR"` or literal), `extra: dict`.
-  - *Legacy two-mode config (back-compat; used only when `provider` is unset):*
-    `mode: LLMMode` (`hosted`\|`byo`, default `byo`), `endpoint?: str`.
-    `mode=byo` → OpenAI-compatible at `base_url`/`endpoint`; `mode=hosted` →
-    Anthropic. Existing spaces keep working without migration.
+- **`LLMConfig`** — per-space LLM selection (all fields optional; unset → the
+  `GLOSSA_DEFAULT_LLM_*` settings apply):
+  - `provider?: str` — one of `"anthropic"`, `"openai"`, `"gemini"`, `"bedrock"`,
+    `"vertex"`. When set, takes precedence over `settings.default_llm_provider`.
+  - `base_url?: str` — custom base URL (anthropic/openai; e.g. an
+    OpenAI-compatible endpoint).
+  - `model?: str` — model name (else `settings.default_llm_model`).
+  - `api_key_ref?: str` — `"env:VAR"` or a literal key; overrides the provider's
+    default `GLOSSA_*_API_KEY` setting when set.
+  - `extra: dict` — provider-specific overrides: `region` (bedrock),
+    `project`/`location` (vertex).
   - Resolution precedence (see `glossa/llm/models.py` `build_model`): `provider`
-    set → that provider; else `mode=hosted` → anthropic; else byo/default →
-    `settings.default_llm_provider` (OpenAI-compatible).
+    set → that provider; else → `settings.default_llm_provider`. Unknown provider
+    → `ValueError`. The `_BUILDERS` table maps each provider to its model class.
 - **`SpaceStats`**: `source_count` (0), `page_count` (0), `last_ingest_at?`.
 
 ### Source — `glossa/models/source.py`

@@ -46,7 +46,8 @@ All app routers are mounted in `glossa/main.py`; per-endpoint logic lives under
 | PUT | `/spaces/{space_id}/schema` | `?schema_markdown=` | `{ok, path}` (402 on storage quota) |
 
 **`SpaceCreate`**: `name` (req), `slug?` (auto-slugified from name if omitted),
-`llm_config?` (`LLMConfig`, defaults to `mode=byo`), `schema_markdown?`,
+`llm_config?` (`LLMConfig`; unset → the `GLOSSA_DEFAULT_LLM_*` settings apply),
+`schema_markdown?`,
 `tenant_id?` (admin-only override; non-admins always create in their own tenant).
 **`SpaceUpdate`**: `name?`, `llm_config?`.
 **`Space`** response: see `reference/data-model.md`.

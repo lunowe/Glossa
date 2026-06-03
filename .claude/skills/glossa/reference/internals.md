@@ -38,34 +38,52 @@ and swap the construction in `main.py`'s lifespan (or make it settings-driven).
 ### Model layer (Pydantic AI) — `glossa/llm/models.py`
 
 All Glossa inference runs through **Pydantic AI**. The `glossa/llm/` package
-re-exports four functions:
+re-exports five functions. There are exactly **five providers**, dispatched via the
+`_BUILDERS` table in `glossa/llm/models.py`:
+
+| provider | model class | default auth |
+|---|---|---|
+| `anthropic` | `AnthropicModel` | `settings.anthropic_api_key` |
+| `openai` | `OpenAIChatModel` | `settings.openai_api_key` (+ `openai_base_url`) |
+| `gemini` | `GoogleModel` (GLA) | `settings.gemini_api_key` |
+| `bedrock` | `BedrockConverseModel` | `settings.aws_*` / `bedrock_api_key` (+ `aws_region`) |
+| `vertex` | `GoogleModel` via `GoogleCloudProvider` | `vertex_project`/`_location`/`_service_account_file` (else ADC) |
+
+The `google` and `bedrock` SDKs are imported **lazily** inside their builders so
+Glossa (and the test suite) runs with only `pydantic-ai-slim[openai,anthropic]`
+installed; the validation errors (missing key/region) fire *before* the lazy import.
 
 - `build_model(space, settings) -> pydantic_ai.models.Model` — constructs the
   Pydantic AI model for a space (no network until first call). Resolution
   precedence:
-  1. `llm_config.provider` set → that Pydantic AI provider (`openai`, `anthropic`,
-     `google`, `groq`, …).
-  2. `llm_config.mode == hosted` (legacy two-mode config) → `anthropic`.
-  3. Else (byo / default) → `openai`-compatible endpoint at
-     `base_url`/`endpoint`/`settings.default_llm_endpoint`.
+  1. `llm_config.provider` set → that provider.
+  2. Else → `settings.default_llm_provider`.
+
+  Unknown provider → `ValueError`. Per-space overrides: `llm_config.base_url`
+  (anthropic/openai), `llm_config.api_key_ref` (`"env:VAR"`/literal, all
+  key-based providers), `llm_config.extra.region` (bedrock),
+  `llm_config.extra.{project,location}` (vertex).
 - `resolve_provider(space, settings) -> str` — the string provider name (used for
   usage/billing and Anthropic-specific settings).
 - `resolve_model_name(space, settings) -> str` — bare model name for
   usage/billing attribution.
 - `model_settings_for(space, settings, *, temperature) -> dict` — per-call
   `model_settings`. For Anthropic: omits sampling params, enables adaptive
-  thinking + effort (`settings.hosted_*`), and sets
-  `anthropic_cache_instructions=True` for prompt-cache reuse. For the OpenAI
-  family: passes `{"temperature": temperature}`.
+  thinking + effort (`settings.anthropic_*`), and sets
+  `anthropic_cache_instructions=True` for prompt-cache reuse. For every other
+  provider (openai/gemini/bedrock/vertex): passes `{"temperature": temperature}`.
 - `usage_to_dict(run_usage, *, provider) -> dict` — maps a Pydantic AI
   `RunUsage` to the dict `record_usage` expects. Anthropic reports `input_tokens`
-  excluding cached tokens; for the OpenAI family `usage_to_dict` subtracts cache
-  reads from `input_tokens` to match `glossa.pricing`.
+  excluding cached tokens; every other provider folds cache reads into
+  `input_tokens`, so `usage_to_dict` subtracts them to match `glossa.pricing`
+  (`_CACHE_EXCLUDED_FROM_INPUT = {"anthropic"}`).
 
 Agents are defined at module level with no model bound; `build_model` injects the
 model at call time via `agent.run(..., model=...)`. To support a new provider: add
-a `build_model` branch, update `_CACHE_EXCLUDED_FROM_INPUT` if needed, and install
-the matching `pydantic-ai-slim` extra (e.g. `pydantic-ai-slim[anthropic]`).
+a builder fn + `_BUILDERS` entry in `glossa/llm/models.py`, add its key/auth
+settings to `glossa.config.Settings`, update `_CACHE_EXCLUDED_FROM_INPUT` if it
+reports input/cache separately, and install the matching `pydantic-ai-slim` extra
+(lazy-import the SDK if it isn't a default install).
 
 ## Ingest pipeline — `glossa/ingest/`
 
@@ -195,11 +213,14 @@ fire it via `webhook_delivery.fire(...)` at the right point. Document it in
 and swap the construction in `main.py`'s lifespan. Update `reference/internals.md`
 + `reference/config.md`.
 
-**Add a Pydantic AI LLM provider.** Add a branch in `glossa/llm/models.py`
-`build_model`; if the provider folds cache reads into `input_tokens` (OpenAI
-family does, Anthropic does not) update `_CACHE_EXCLUDED_FROM_INPUT`; install the
-matching `pydantic-ai-slim` extra. Update `reference/internals.md` +
-`reference/config.md`.
+**Add a Pydantic AI LLM provider.** Add a `_build_<name>` fn and a `_BUILDERS`
+entry in `glossa/llm/models.py` (lazy-import the SDK if it's not a default
+install); add the provider to `SUPPORTED_PROVIDERS` and, if it's key-based, to
+`_PROVIDER_KEY_SETTING`. Add its key/auth fields to `glossa.config.Settings`. If
+the provider reports input/cache separately (Anthropic does; the others fold cache
+reads into `input_tokens`) add it to `_CACHE_EXCLUDED_FROM_INPUT`. Install the
+matching `pydantic-ai-slim` extra in `requirements.txt`, add list prices to
+`glossa.pricing`, and update `reference/internals.md` + `reference/config.md`.
 
 **Add a Job kind.** Add to `JobKind`, write an `enqueue_*`/`run_*` pair following
 the ingest/lint shape (per-space lock + `track_background_task` + Job status

@@ -50,7 +50,17 @@ OPENAI = {
     "gpt-4.1-mini": ModelPrice(0.40, 1.60, 0.40, 0.10),
 }
 
-MODEL_PRICES: dict[str, ModelPrice] = {**ANTHROPIC, **OPENAI}
+# Google Gemini list prices (Gemini Developer API; Vertex bills the same per-token
+# rates). Cache writes ≈ input; cache reads at Google's ~75% context-cache discount.
+# Source: https://ai.google.dev/gemini-api/docs/pricing — keep in sync on launches.
+GEMINI = {
+    "gemini-2.5-pro": ModelPrice(1.25, 10.00, 1.25, 0.31),
+    "gemini-2.5-flash": ModelPrice(0.30, 2.50, 0.30, 0.075),
+    "gemini-2.5-flash-lite": ModelPrice(0.10, 0.40, 0.10, 0.025),
+    "gemini-2.0-flash": ModelPrice(0.10, 0.40, 0.10, 0.025),
+}
+
+MODEL_PRICES: dict[str, ModelPrice] = {**ANTHROPIC, **OPENAI, **GEMINI}
 
 UNKNOWN_MODEL_PRICE = ModelPrice(0.0, 0.0, 0.0, 0.0)
 

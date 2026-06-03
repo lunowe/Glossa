@@ -21,15 +21,40 @@ class Settings(BaseSettings):
     session_ttl_hours: int = 168  # 7 days
     session_cookie_secure: bool = False  # set true in production behind https; SameSite=Lax + Secure
 
-    # Provider-agnostic default (Pydantic AI provider name) for spaces that don't
-    # set llm_config.provider. "openai" covers OpenAI and any OpenAI-compatible
-    # endpoint via default_llm_endpoint (base_url).
+    # --- LLM (all inference via Pydantic AI) --------------------------------
+    # One default provider + model for spaces that don't override via
+    # llm_config. Provider is one of: anthropic | openai | gemini | bedrock |
+    # vertex. See glossa/llm/models.py for how each is constructed.
     default_llm_provider: str = "openai"
-    default_llm_endpoint: str | None = None
     default_llm_model: str = "gpt-4o-mini"
-    default_llm_api_key: str | None = None
 
+    # Per-provider API keys. A space uses the key for its resolved provider
+    # unless it sets llm_config.api_key_ref explicitly.
     anthropic_api_key: str | None = None
+    openai_api_key: str | None = None
+    gemini_api_key: str | None = None  # Google Gemini Developer API (AI Studio)
+
+    # OpenAI-compatible servers (Azure, OpenRouter, Groq, vLLM, Ollama, …):
+    # point the openai provider at a custom base URL. Unset = api.openai.com.
+    openai_base_url: str | None = None
+
+    # AWS Bedrock. Provide static credentials OR a Bedrock bearer token, OR — if
+    # all are unset — rely on the host's default AWS credential chain (env vars,
+    # ~/.aws, IAM role). A region is always required.
+    aws_region: str | None = None
+    aws_access_key_id: str | None = None
+    aws_secret_access_key: str | None = None
+    aws_session_token: str | None = None
+    bedrock_api_key: str | None = None  # AWS_BEARER_TOKEN_BEDROCK-style bearer token
+
+    # Google Vertex AI. Uses Application Default Credentials unless a service
+    # account JSON file is given; project/location target the Vertex endpoint.
+    vertex_project: str | None = None
+    vertex_location: str | None = None
+    vertex_service_account_file: str | None = None
+
+    # Anthropic-only tuning (adaptive thinking + prompt caching are Anthropic
+    # features; ignored by the other providers).
     anthropic_effort: str = "high"
     anthropic_max_tokens: int = 16000
     anthropic_enable_thinking: bool = True

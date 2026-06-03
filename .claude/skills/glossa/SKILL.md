@@ -149,12 +149,12 @@ curl -s -X POST $BASE/spaces/$SID/query -H "Authorization: Bearer $KEY" \
   someone else's space/job/page exists. Quota-exceeded returns **402**.
 - **Keys are shown once.** `POST …/api-keys` returns `plaintext` exactly once;
   only the SHA-256 hash is stored. Lost = rotate.
-- **LLM config is provider-agnostic.** Set `llm_config.provider` to any Pydantic
-  AI provider name (`"openai"`, `"anthropic"`, `"groq"`, …). Legacy `mode=byo`
-  (OpenAI-compatible endpoint) and `mode=hosted` (Anthropic, with thinking +
-  prompt caching) both work. Resolution precedence: `provider` set → that
-  provider; else `mode=hosted` → anthropic; else byo/default → `openai`. See
-  `reference/config.md` and `reference/internals.md` § Model layer.
+- **LLM config: five providers, one key each.** Set `llm_config.provider` to
+  `anthropic` | `openai` | `gemini` | `bedrock` | `vertex` (else
+  `GLOSSA_DEFAULT_LLM_PROVIDER`). Each provider has its own `GLOSSA_*` key/auth
+  setting; a space's `api_key_ref` overrides it. Resolution: `provider` set → that
+  provider; else default; unknown → `ValueError`. See `reference/config.md` and
+  `reference/internals.md` § Model layer.
 - **Jobs are in-process** (`asyncio.create_task`). A job in flight at restart is
   stuck in `running`; the per-space lock is an `asyncio.Lock` (single-worker).
 - **The Obsidian sync is one-way.** Glossa owns the wiki; Obsidian is a local
