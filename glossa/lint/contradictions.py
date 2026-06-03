@@ -15,6 +15,8 @@ from glossa.db.client import get_db
 from glossa.lint.prompts import SYSTEM_LINT_CONTRADICTIONS, contradictions_user_prompt
 from glossa.lint.scanner import PageRecord
 from glossa.llm import usage_to_dict
+from glossa.utils import frontmatter
+from glossa.utils.wikilinks import extract_wikilinks
 
 if TYPE_CHECKING:
     from pydantic_ai.models import Model
@@ -46,9 +48,43 @@ class ContradictionFinding:
 # Module-level agent — no model bound; model injected at run time.
 contradictions_agent = Agent(output_type=ContradictionsOut, instructions=SYSTEM_LINT_CONTRADICTIONS)
 
+_SUMMARY_PREFIX = "summaries/src-"
+
 
 def _summary_storage_path(source_id: str) -> str:
     return f"pages/summaries/src-{source_id}.md"
+
+
+def _body_for_prompt(markdown: str) -> str:
+    _, body = frontmatter.parse(markdown)
+    return body.strip()
+
+
+def _summary_for_prompt(markdown: str) -> str:
+    body = _body_for_prompt(markdown)
+    for heading in ("\n## Erwähnte Entitäten", "\n## Verknüpfte Wiki-Seiten"):
+        if heading in body:
+            body = body.split(heading, 1)[0]
+    return body.strip()
+
+
+def cited_source_ids_from_content(markdown: str) -> list[str]:
+    """Return source ids cited through ``[[summaries/src-...]]`` links."""
+    source_ids: list[str] = []
+    for target in extract_wikilinks(markdown):
+        if target.startswith(_SUMMARY_PREFIX):
+            source_id = target[len(_SUMMARY_PREFIX) :]
+            if source_id:
+                source_ids.append(source_id)
+    return list(dict.fromkeys(source_ids))
+
+
+def source_ids_for_contradiction_check(page: PageRecord) -> list[str]:
+    """Pick the smallest source set that can support a contradiction check."""
+    cited_source_ids = cited_source_ids_from_content(page.content)
+    if cited_source_ids:
+        return cited_source_ids
+    return list(dict.fromkeys(page.source_refs))
 
 
 async def _load_source_summaries(
@@ -72,7 +108,7 @@ async def _load_source_summaries(
                 "source_id": source_id,
                 "title": (src_doc or {}).get("title"),
                 "created_at": (src_doc or {}).get("created_at"),
-                "summary": content,
+                "summary": _summary_for_prompt(content),
             }
         )
     return summaries
@@ -93,10 +129,14 @@ async def check_page_for_contradictions(
     made (page had <2 source citations); otherwise it is the provider usage
     dict, suitable for ``record_usage``.
     """
+    source_ids = source_ids_for_contradiction_check(page)
+    if len(source_ids) < 2:
+        return [], None
+
     summaries = await _load_source_summaries(
         storage=storage,
         space_id=space_id,
-        source_ids=page.source_refs,
+        source_ids=source_ids,
     )
     if len(summaries) < 2:
         return [], None
@@ -104,7 +144,7 @@ async def check_page_for_contradictions(
     user_prompt = contradictions_user_prompt(
         schema_markdown=schema_markdown,
         page_path=page.path,
-        page_content=page.content,
+        page_content=_body_for_prompt(page.content),
         source_summaries=summaries,
     )
     result = await contradictions_agent.run(

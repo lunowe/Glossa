@@ -24,6 +24,8 @@ async def regenerate_index(*, storage: "StorageBackend", space_id: str) -> str:
             by_group["summaries"].append(doc)
         elif path.startswith("syntheses/"):
             by_group["syntheses"].append(doc)
+        elif path.startswith("notes/"):
+            by_group["notes"].append(doc)
         else:
             by_group["other"].append(doc)
 

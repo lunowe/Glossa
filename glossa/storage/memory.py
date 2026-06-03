@@ -1,10 +1,7 @@
 """In-memory StorageBackend. Useful for tests, ephemeral demos, and CI."""
 
 from glossa.storage.base import StorageBackend
-
-DEFAULT_SCHEMA = "# Schema\n\nDefault Glossa space schema.\n"
-DEFAULT_INDEX = "# Index\n\nNo pages yet.\n"
-DEFAULT_LOG = "# Log\n\n"
+from glossa.storage.defaults import DEFAULT_INDEX, DEFAULT_LOG, DEFAULT_SCHEMA
 
 
 class InMemoryStorageBackend(StorageBackend):

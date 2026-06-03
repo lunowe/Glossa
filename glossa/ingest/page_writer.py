@@ -12,13 +12,14 @@ from glossa.db.client import get_db
 from glossa.models.page import Page, PageKind
 from glossa.usage.quota import check_storage_quota_before_write
 from glossa.utils import frontmatter
+from glossa.utils.wikilinks import normalize_page_path
 
 if TYPE_CHECKING:
     from glossa.storage.base import StorageBackend
 
 
 def _storage_path(page_path: str) -> str:
-    return f"pages/{page_path}.md"
+    return f"pages/{normalize_page_path(page_path)}.md"
 
 
 async def read_existing_page(
@@ -50,6 +51,7 @@ async def upsert_page(
     enforced before the write. ``QuotaExceededError`` is raised on block;
     the ingest workflow translates that into a failed Job.
     """
+    page_path = normalize_page_path(page_path)
     storage_path = _storage_path(page_path)
     existing = await storage.read_page(space_id, storage_path)
     is_new = not existing
@@ -97,6 +99,9 @@ def build_summary_page(
     entity_page_paths: list[str],
 ) -> str:
     """Build the markdown content for a summary page (deterministic — no LLM)."""
+    entity_page_paths = list(
+        dict.fromkeys(path for raw_path in entity_page_paths if (path := normalize_page_path(raw_path)))
+    )
     now = datetime.now(UTC).isoformat()
     fm = {
         "kind": "summary",

@@ -32,9 +32,10 @@ The entire domain is five objects:
 - **`SourceProvider`** *(implicit)* — push (content stored), pull (`fetch_callback` lets the host stay system of record), url (a pasted link, fetched + converted to markdown), or upload (a document parsed to text with LiteParse).
 
 LLM inference runs through **Pydantic AI** and is provider-agnostic: set
-`llm_config.provider` on a space to `"openai"`, `"anthropic"`, or any other
-Pydantic AI provider. The legacy `mode=byo` (OpenAI-compatible endpoint) and
-`mode=hosted` (Anthropic with thinking + prompt caching) both continue to work.
+`llm_config.provider` on a space to `"openai"`, `"anthropic"`, or another
+supported Pydantic AI provider. OpenAI-compatible endpoints use
+`llm_config.base_url` or `GLOSSA_DEFAULT_LLM_ENDPOINT`; Anthropic uses
+`llm_config.provider = "anthropic"`.
 
 The API surface, the 5-object model, the bucket layout, and the webhook
 signature format are the **stable contract**. Everything behind it (pipeline
@@ -51,19 +52,28 @@ POST /spaces/{id}/sources/upload              → upload a document (PDF/DOCX/PP
 POST /spaces/{id}/sources/{sid}/ingest        → queue an ingest Job
 GET  /jobs/{job_id}                            → poll until succeeded   (or subscribe a webhook)
 POST /spaces/{id}/query   { "question": … }   → synthesized answer + citations back to sources
+POST /spaces/{id}/chat    { "messages": … }   → interactive wiki chat with read tools
+POST /spaces/{id}/chat/stream                  → SSE chat stream with tool-call events
 POST /spaces/{id}/lint                         → queue a lint Job (orphans / broken links / contradictions)
 ```
 
 **Ingest** (one source at a time per space): fetch content → one LLM call
-extracts `{entities, summary, log_blurb}` → write a deterministic
-`summaries/src-<id>` page → run the agentic **wiki maintainer** (surgical
-section/substring edits, dedup via search, synthesis pages, under configurable
-caps) → deterministic flush → regenerate `index.md` → append a line to `log.md`
-→ fire webhooks.
+extracts `{entities, summary, log_blurb}` → run the agentic **wiki maintainer**
+(surgical section/substring edits, dedup via search, synthesis pages, under
+configurable caps) → deterministic flush → write `summaries/src-<id>` with
+canonical links to pages that actually exist → regenerate `index.md` → append a
+line to `log.md` → fire webhooks.
 
 **Query** makes two LLM calls: *route* (pick ≤8 pages from `index.md`) then
 *answer* (write markdown with `[[path]]` citations). Citations resolve back to
 each cited source's `external_uri`, so integrators can deep-link to the host.
+
+**Chat** is request-scoped and tool-driven. It can read `index.md`, recent
+`log.md`, search/read wiki pages, and — only with `allow_writes=true` — save a
+compact durable result under `notes/<slug>`. Saved notes regenerate `index.md`
+and append a `chat | …` entry to `log.md`. `/chat/stream` returns server-sent
+events for text deltas, tool calls, tool results, and the final structured
+response.
 
 **Lint** runs three checks: orphans and broken `[[wikilinks]]` (deterministic) +
 contradictions/supersessions (LLM, only on pages citing ≥2 sources). It writes
@@ -88,8 +98,9 @@ issue real `glsk_live_…` keys to enforce tenants.
 Config lives in `glossa/config.py`; copy `.env.example` → `.env` to start. For
 an OpenAI-compatible endpoint set `GLOSSA_DEFAULT_LLM_ENDPOINT`,
 `GLOSSA_DEFAULT_LLM_MODEL`, and `GLOSSA_DEFAULT_LLM_API_KEY`. For Anthropic set
-`GLOSSA_HOSTED_ANTHROPIC_API_KEY` and use `llm_config.provider = "anthropic"` (or
-`mode = "hosted"`) on the space. You can also override `llm_config` per space.
+`GLOSSA_ANTHROPIC_API_KEY`, `GLOSSA_DEFAULT_LLM_PROVIDER=anthropic`, and an
+Anthropic-compatible `GLOSSA_DEFAULT_LLM_MODEL`; or override `llm_config` per
+space with `provider`, `model`, `base_url`, and `api_key_ref`.
 
 Tests / lint / format (run before committing):
 
@@ -128,8 +139,10 @@ GET    /spaces/{id}/lint-report                    lint_report.md (404 if none y
 # Jobs
 GET    /jobs/{job_id}                              status + result
 
-# Query & lint
+# Query, chat & lint
 POST   /spaces/{id}/query                          { question } → answer + citations   (scope: query)
+POST   /spaces/{id}/chat                           { messages } → interactive answer   (scope: query)
+POST   /spaces/{id}/chat/stream                    SSE chat stream                     (scope: query)
 POST   /spaces/{id}/lint                            queue a lint Job                     (scope: lint)
 
 # Webhooks
@@ -281,9 +294,10 @@ and set the OAuth credentials in `.env`.
 - **Python client** — `from glossa.mcp.client import GlossaClient`. Async,
   `httpx`-based; `GlossaClient.from_env()` reads `GLOSSA_BASE_URL` /
   `GLOSSA_API_TOKEN` / `GLOSSA_DEFAULT_SPACE_ID`. Covers read + source / ingest /
-  query / lint; call the HTTP API directly for admin/key/quota/webhook ops.
+  query / chat / lint; call the HTTP API directly for admin/key/quota/webhook ops
+  and chat streaming.
 - **MCP server** — `glossa-mcp` exposes Glossa as MCP tools (`glossa_query`,
-  `glossa_list_spaces`, `glossa_list_pages`, `glossa_get_page`,
+  `glossa_chat`, `glossa_list_spaces`, `glossa_list_pages`, `glossa_get_page`,
   `glossa_add_source`, `glossa_get_job`, `glossa_lint`) + two resources
   (`glossa://{space_id}/index`, `…/log`). Drop it into Claude Desktop/Code,
   Cursor, or Zed via the standard `mcpServers` config.
@@ -306,6 +320,7 @@ and set the OAuth credentials in `.env`.
 ├── pages/
 │   ├── entities/<type>/<slug>.md
 │   ├── syntheses/<slug>.md
+│   ├── notes/<slug>.md
 │   └── summaries/src-<source_id>.md
 └── assets/src-<source_id>/<file>
 ```

@@ -22,7 +22,7 @@ from glossa.concurrency import lock_for_space, track_background_task
 from glossa.db.client import get_db
 from glossa.ingest import webhook_delivery
 from glossa.lint import report_writer, scanner
-from glossa.lint.contradictions import check_page_for_contradictions
+from glossa.lint.contradictions import check_page_for_contradictions, source_ids_for_contradiction_check
 from glossa.llm import build_model, resolve_model_name, resolve_provider
 from glossa.models.job import Job, JobKind, JobResult, JobStatus
 from glossa.models.space import Space
@@ -144,16 +144,14 @@ async def _run_lint_inner(
     ]
 
     pages_with_llm_check = 0
-    if pages and any(len(p.source_refs) >= 2 for p in pages):
+    contradiction_candidates = [p for p in pages if len(source_ids_for_contradiction_check(p)) >= 2]
+    if contradiction_candidates:
         if model is None:
             model = build_model(space, settings)
         provider = resolve_provider(space, settings)
         effective_model = resolve_model_name(space, settings)
 
-        for page in pages:
-            if len(page.source_refs) < 2:
-                continue
-            pages_with_llm_check += 1
+        for page in contradiction_candidates:
             contradiction_findings, usage = await check_page_for_contradictions(
                 model=model,
                 provider=provider,
@@ -163,6 +161,7 @@ async def _run_lint_inner(
                 page=page,
             )
             if usage is not None:
+                pages_with_llm_check += 1
                 await record_usage(
                     tenant_id=space.tenant_id,
                     space_id=space.id,

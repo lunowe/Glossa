@@ -81,7 +81,5 @@ async def test_sync_space_to_vault_writes_obsidian_mirror(tmp_path):
     assert result.pages_written == 1
     assert (tmp_path / "Glossa" / "schema.md").read_text() == "# Schema\n"
     assert "[[Glossa/entities/company/allianz]]" in (tmp_path / "Glossa" / "index.md").read_text()
-    assert "[[Glossa/summaries/src-src_a]]" in (
-        tmp_path / "Glossa" / "entities" / "company" / "allianz.md"
-    ).read_text()
+    assert "[[Glossa/summaries/src-src_a]]" in (tmp_path / "Glossa" / "entities" / "company" / "allianz.md").read_text()
     assert "/spaces/gls_one/pages" in requests

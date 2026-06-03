@@ -5,10 +5,10 @@
 record after each phase and firing webhooks on completion.
 
 The pipeline: fetch the source, extract entities + a summary (single LLM call),
-write the per-source summary page, then run the agentic **maintainer** which
-edits the wiki with surgical patch tools (dedup, synthesis, minimal edits) under
-caps; the maintainer's working copy is flushed deterministically, then the index
-and log are regenerated.
+run the agentic **maintainer** which edits the wiki with surgical patch tools
+(dedup, synthesis, minimal edits) under caps, flush the maintainer's working
+copy deterministically, then write the per-source summary with canonical page
+links before regenerating the index and log.
 
 For MVP this is in-process. The Job model and asyncio.Task split makes it easy to
 move to a real worker (Arq/RQ/Celery) without changing the API contract.
@@ -25,7 +25,7 @@ from fastapi import FastAPI
 from glossa.concurrency import lock_for_space, track_background_task
 from glossa.db.client import get_db
 from glossa.ingest import agents, index_writer, log_writer, page_writer, source_fetcher, webhook_delivery
-from glossa.ingest.extract import extract_from_source
+from glossa.ingest.extract import ExtractedEntity, extract_from_source
 from glossa.llm import build_model, model_settings_for, resolve_model_name, resolve_provider, usage_to_dict
 from glossa.models.job import Job, JobKind, JobResult, JobStatus
 from glossa.models.page import PageKind
@@ -33,6 +33,8 @@ from glossa.models.source import Source, SourceStatus
 from glossa.models.space import Space
 from glossa.models.webhook import WebhookEvent
 from glossa.usage import Operation, record_usage
+from glossa.utils.slug import slugify
+from glossa.utils.wikilinks import normalize_page_path
 
 if TYPE_CHECKING:
     from pydantic_ai.models import Model
@@ -181,6 +183,7 @@ async def _run_ingest_inner(
             "metadata": source.metadata,
         },
         source_content=source_content,
+        max_candidate_entities=settings.ingest_max_candidate_entities,
     )
     await record_usage(
         tenant_id=space.tenant_id,
@@ -194,37 +197,15 @@ async def _run_ingest_inner(
     pages_created: list[str] = []
     pages_updated: list[str] = []
 
-    # 2. Summary page first, so the maintainer's edits can cite [[summaries/src-<id>]].
+    # 2. Maintainer agent: surgical, dedup-aware edits + synthesis (capped).
+    # The source summary path is reserved during validation, then written after
+    # the flush with only canonical links to pages that actually exist.
     summary_path = f"summaries/src-{source.id}"
-    summary_markdown = page_writer.build_summary_page(
-        source_id=source.id,
-        source_title=source.title,
-        source_external_uri=source.external_uri,
-        source_metadata=source.metadata,
-        summary_markdown=extraction.source_summary_markdown,
-        entity_page_paths=[e.page_path for e in extraction.entities],
-    )
-    sum_is_new, _sum_is_changed = await page_writer.upsert_page(
-        storage=storage,
+    entities = await _maintainer_entities(
         space_id=space_id,
-        page_path=summary_path,
-        kind=PageKind.SUMMARY,
-        title=source.title,
-        new_content=summary_markdown,
-        source_refs=[source.id],
-        job_id=job_id,
-        tenant_id=space.tenant_id,
+        extracted_entities=extraction.entities,
+        max_entities=settings.ingest_max_candidate_entities,
     )
-    if sum_is_new:
-        pages_created.append(summary_path)
-    else:
-        pages_updated.append(summary_path)
-
-    # 3. Maintainer agent: surgical, dedup-aware edits + synthesis (capped).
-    entities = [
-        {"type": e.type, "title": e.title, "page_path": e.page_path, "relevance": e.relevance}
-        for e in extraction.entities
-    ]
     wc, report, maintainer_usage, capped = await agents.run_maintainer(
         model=model,
         model_settings=settings_for_call,
@@ -247,12 +228,38 @@ async def _run_ingest_inner(
             job_id=job_id,
         )
 
-    # 4. Flush the working copy deterministically (validate, stamp, quota, write).
+    # 3. Flush the working copy deterministically (validate, stamp, quota, write).
     created, updated = await agents.flush_working_copy(
         wc=wc, space=space, source=source, job_id=job_id, storage=storage
     )
     pages_created.extend(created)
     pages_updated.extend(updated)
+
+    # 4. Summary page, using only canonical entity pages changed in this run.
+    summary_entity_paths = _summary_entity_paths(created=created, updated=updated)
+    summary_markdown = page_writer.build_summary_page(
+        source_id=source.id,
+        source_title=source.title,
+        source_external_uri=source.external_uri,
+        source_metadata=source.metadata,
+        summary_markdown=extraction.source_summary_markdown,
+        entity_page_paths=summary_entity_paths,
+    )
+    sum_is_new, sum_is_changed = await page_writer.upsert_page(
+        storage=storage,
+        space_id=space_id,
+        page_path=summary_path,
+        kind=PageKind.SUMMARY,
+        title=source.title,
+        new_content=summary_markdown,
+        source_refs=[source.id],
+        job_id=job_id,
+        tenant_id=space.tenant_id,
+    )
+    if sum_is_new:
+        pages_created.append(summary_path)
+    elif sum_is_changed:
+        pages_updated.append(summary_path)
 
     # 5. Index + log (deterministic).
     await index_writer.regenerate_index(storage=storage, space_id=space_id)
@@ -311,6 +318,56 @@ async def _run_ingest_inner(
         payload={"job_id": job_id, "source_id": source_id, "result": result.model_dump()},
     )
     return result
+
+
+def _summary_entity_paths(*, created: list[str], updated: list[str]) -> list[str]:
+    """Return canonical entity links for the source summary."""
+    return list(dict.fromkeys(path for path in [*created, *updated] if path.startswith("entities/")))
+
+
+async def _maintainer_entities(
+    *, space_id: str, extracted_entities: list[ExtractedEntity], max_entities: int
+) -> list[dict]:
+    """Return capped, page-worthy, canonicalized candidates for the maintainer."""
+    db = get_db()
+    cursor = db.pages.find({"space_id": space_id, "path": {"$regex": "^entities/"}}, {"path": 1, "title": 1})
+    canonical_by_slug: dict[str, str] = {}
+    async for doc in cursor:
+        path = normalize_page_path(doc["path"])
+        title_slug = slugify(doc.get("title") or "")
+        path_slug = path.rsplit("/", 1)[-1]
+        if title_slug:
+            canonical_by_slug.setdefault(title_slug, path)
+        canonical_by_slug.setdefault(path_slug, path)
+
+    seen_paths: set[str] = set()
+    candidates: list[dict] = []
+    pageworthy = [e for e in extracted_entities if e.page_action != "summary_only"]
+    pageworthy.sort(key=lambda e: (-e.importance, e.title.lower(), e.page_path))
+
+    for e in pageworthy:
+        path = normalize_page_path(e.page_path)
+        canonical_path = canonical_by_slug.get(slugify(e.title)) or canonical_by_slug.get(path.rsplit("/", 1)[-1])
+        action = e.page_action
+        if canonical_path:
+            path = canonical_path
+            action = "update_existing"
+        if path in seen_paths:
+            continue
+        seen_paths.add(path)
+        candidates.append(
+            {
+                "type": e.type,
+                "title": e.title,
+                "page_path": path,
+                "page_action": action,
+                "importance": e.importance,
+                "relevance": e.relevance,
+            }
+        )
+        if len(candidates) >= max_entities:
+            break
+    return candidates
 
 
 async def _mark_job_failed(job_id: str, error_message: str) -> None:

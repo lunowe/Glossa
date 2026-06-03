@@ -44,12 +44,7 @@ def rewrite_wikilinks(markdown: str, *, link_prefix: str) -> str:
 
 
 def _is_external_or_prefixed(target: str, prefix: str) -> bool:
-    return (
-        "://" in target
-        or target.startswith("/")
-        or target.startswith(f"{prefix}/")
-        or target.startswith("#")
-    )
+    return "://" in target or target.startswith("/") or target.startswith(f"{prefix}/") or target.startswith("#")
 
 
 async def sync_space_to_vault(
@@ -136,8 +131,7 @@ async def _amain(argv: list[str] | None = None) -> int:
         )
 
     sys.stdout.write(
-        f"Synced {result.pages_written} pages "
-        f"({result.files_written} markdown files total) to {result.vault_path}\n"
+        f"Synced {result.pages_written} pages ({result.files_written} markdown files total) to {result.vault_path}\n"
     )
     return 0
 

@@ -40,7 +40,7 @@ ANTHROPIC = {
     "claude-haiku-4-5": ModelPrice(1.00, 5.00, 1.25, 0.10),
 }
 
-# OpenAI list prices for the common BYO targets. OpenAI prompt-caching is
+# OpenAI list prices for common OpenAI/Pydantic AI targets. OpenAI prompt-caching is
 # free reads / no separate write tier; we approximate cache_read by the
 # documented 50% discount and treat cache_write as the same as input.
 OPENAI = {

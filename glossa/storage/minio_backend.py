@@ -6,19 +6,10 @@ from minio import Minio
 from minio.error import S3Error
 
 from glossa.storage.base import StorageBackend
+from glossa.storage.defaults import DEFAULT_INDEX, DEFAULT_LOG, DEFAULT_SCHEMA
 
 if TYPE_CHECKING:
     from glossa.config import Settings
-
-
-DEFAULT_SCHEMA = """# Schema
-
-Default Glossa space schema. Edit this file to teach the LLM how to
-maintain *this* wiki: entity types, page naming, ingest workflow, tone.
-"""
-
-DEFAULT_INDEX = "# Index\n\nNo pages yet.\n"
-DEFAULT_LOG = "# Log\n\n"
 
 
 class MinioStorageBackend(StorageBackend):

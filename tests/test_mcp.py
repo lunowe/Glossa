@@ -86,6 +86,27 @@ async def test_client_query_posts_question_payload():
     assert result["answer"] == "ok"
 
 
+async def test_client_chat_posts_message_payload():
+    captured: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(req.content))
+        return _json({"answer": "ok"})
+
+    async with GlossaClient("http://api.test", client=_mock_client(handler)) as client:
+        result = await client.chat("gls_one", message="What is X?", context="posted", max_pages=4, allow_writes=True)
+
+    assert captured == [
+        {
+            "messages": [{"role": "user", "content": "What is X?"}],
+            "context": "posted",
+            "max_pages": 4,
+            "allow_writes": True,
+        }
+    ]
+    assert result["answer"] == "ok"
+
+
 async def test_client_create_source_serializes_push_payload():
     captured: list[dict] = []
 
@@ -165,6 +186,27 @@ async def test_mcp_query_tool_calls_query_endpoint():
     assert captured[0].url.path == "/spaces/gls_one/query"
     rendered = _render_tool_result(result)
     assert "Allianz" in rendered
+
+
+async def test_mcp_chat_tool_calls_chat_endpoint():
+    captured: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured.append(req)
+        return _json({"answer": "ok"})
+
+    async with GlossaClient("http://api.test", default_space_id="gls_one", client=_mock_client(handler)) as client:
+        mcp = build_server(client)
+        result = await mcp.call_tool("glossa_chat", {"message": "What changed?", "allow_writes": True})
+
+    assert len(captured) == 1
+    assert captured[0].method == "POST"
+    assert captured[0].url.path == "/spaces/gls_one/chat"
+    payload = json.loads(captured[0].content)
+    assert payload["messages"] == [{"role": "user", "content": "What changed?"}]
+    assert payload["allow_writes"] is True
+    rendered = _render_tool_result(result)
+    assert "ok" in rendered
 
 
 async def test_mcp_add_source_auto_ingests_by_default():
@@ -265,6 +307,7 @@ async def test_mcp_server_registers_expected_tools_and_resources():
     assert tools == {
         "glossa_list_spaces",
         "glossa_query",
+        "glossa_chat",
         "glossa_list_pages",
         "glossa_get_page",
         "glossa_add_source",

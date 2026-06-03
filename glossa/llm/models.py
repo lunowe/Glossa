@@ -6,9 +6,8 @@ agents run with (``agent.run(..., model=build_model(space, settings))``).
 
 Resolution precedence (see ``glossa.models.space.LLMConfig``):
 
-1. ``provider`` set     -> provider-agnostic registry (openai-compatible, anthropic).
-2. ``mode == hosted``   -> anthropic (legacy two-mode config).
-3. else (byo/default)   -> openai-compatible endpoint (legacy two-mode config).
+1. ``provider`` set -> provider-agnostic registry (openai-compatible, anthropic).
+2. else -> ``GLOSSA_DEFAULT_LLM_PROVIDER``.
 
 New providers slot into ``build_model`` (and, if they fold cache reads into
 ``input_tokens``, stay out of ``_CACHE_EXCLUDED_FROM_INPUT``).
@@ -23,7 +22,7 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.anthropic import AnthropicProvider
 from pydantic_ai.providers.openai import OpenAIProvider
 
-from glossa.models.space import LLMMode, Space
+from glossa.models.space import Space
 
 if TYPE_CHECKING:
     from pydantic_ai.usage import RunUsage
@@ -51,8 +50,6 @@ def resolve_provider(space: Space, settings: "Settings") -> str:
     cfg = space.llm_config
     if cfg.provider:
         return cfg.provider
-    if cfg.mode == LLMMode.HOSTED:
-        return "anthropic"
     return settings.default_llm_provider
 
 
@@ -61,8 +58,6 @@ def resolve_model_name(space: Space, settings: "Settings") -> str:
     cfg = space.llm_config
     if cfg.model:
         return cfg.model
-    if cfg.mode == LLMMode.HOSTED:
-        return settings.hosted_default_model
     return settings.default_llm_model
 
 
@@ -74,20 +69,19 @@ def build_model(space: Space, settings: "Settings") -> Model:
     api_key = _resolve_api_key(cfg.api_key_ref, settings)
 
     if provider == "anthropic":
-        key = api_key or settings.hosted_anthropic_api_key
+        key = api_key or settings.anthropic_api_key
         if not key:
             raise ValueError(
-                "Anthropic requires an API key. Set GLOSSA_HOSTED_ANTHROPIC_API_KEY "
-                "or llm_config.api_key_ref on the space."
+                "Anthropic requires an API key. Set GLOSSA_ANTHROPIC_API_KEY or llm_config.api_key_ref on the space."
             )
         provider_kwargs: dict = {"api_key": key}
-        base_url = cfg.base_url or cfg.endpoint
+        base_url = cfg.base_url
         if base_url:
             provider_kwargs["base_url"] = base_url
         return AnthropicModel(model_name, provider=AnthropicProvider(**provider_kwargs))
 
-    # OpenAI and any OpenAI-compatible endpoint (the legacy "byo"/default path).
-    base_url = cfg.base_url or cfg.endpoint or settings.default_llm_endpoint
+    # OpenAI and any OpenAI-compatible endpoint, still through Pydantic AI.
+    base_url = cfg.base_url or settings.default_llm_endpoint
     if not base_url and not api_key:
         raise ValueError(
             "OpenAI provider requires an API key or an OpenAI-compatible base_url. "
@@ -106,17 +100,17 @@ def model_settings_for(space: Space, settings: "Settings", *, temperature: float
     """Per-call ``model_settings`` for an agent run.
 
     OpenAI family: pass ``temperature``. Anthropic: omit sampling params (thinking
-    models reject them), enable adaptive thinking + effort, and cache the (reused)
-    system prompts — mirroring the previous hosted driver's cost behavior.
+    models reject them), enable adaptive thinking + effort, and cache the reused
+    system prompts through Pydantic AI's Anthropic settings.
     """
     if resolve_provider(space, settings) == "anthropic":
         ms: dict = {
-            "max_tokens": settings.hosted_default_max_tokens,
+            "max_tokens": settings.anthropic_max_tokens,
             "anthropic_cache_instructions": True,
         }
-        if settings.hosted_enable_thinking:
+        if settings.anthropic_enable_thinking:
             ms["thinking"] = True
-            ms["anthropic_effort"] = settings.hosted_default_effort
+            ms["anthropic_effort"] = settings.anthropic_effort
         return ms
     return {"temperature": temperature}
 

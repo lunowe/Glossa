@@ -346,6 +346,54 @@ async def test_lint_runs_llm_contradiction_check_for_pages_with_two_sources(stor
     assert usage_count == 1
 
 
+async def test_lint_skips_contradiction_check_for_stale_source_refs(storage, settings):
+    space = await _seed_space(storage, slug="stale-refs")
+    await _seed_source(space.id, "src_a", title="Source A")
+    await _seed_source(space.id, "src_b", title="Source B")
+
+    db = get_db()
+    for source_id, title in (("src_a", "Source A"), ("src_b", "Source B")):
+        await storage.write_page(
+            space.id,
+            f"pages/summaries/src-{source_id}.md",
+            f"# {title}\n\n{title} summary.",
+        )
+        await db.pages.insert_one(
+            Page(
+                space_id=space.id,
+                path=f"summaries/src-{source_id}",
+                kind=PageKind.SUMMARY,
+                title=title,
+                source_refs=[source_id],
+                updated_at=datetime.now(UTC),
+            ).model_dump()
+        )
+
+    await _seed_page(
+        storage,
+        space.id,
+        path="entities/company/allianz",
+        title="Allianz",
+        body="# Allianz\n\nOnly the current claim remains ([[summaries/src-src_a]]).",
+        source_refs=["src_a", "src_b"],
+    )
+
+    job = _new_job(space.id)
+    await db.jobs.insert_one(job.model_dump())
+
+    result = await run_lint(
+        job_id=job.id,
+        space_id=space.id,
+        storage=storage,
+        settings=settings,
+    )
+
+    assert not any(f["category"] in {"contradiction", "supersession"} for f in result.lint_findings)
+    assert await db.usage_events.count_documents({"space_id": space.id, "operation": Operation.LINT.value}) == 0
+    report = await storage.read_page(space.id, "lint_report.md")
+    assert "ran the contradiction check on **0**" in report
+
+
 async def test_lint_webhook_fires_on_success(storage, settings, monkeypatch):
     """Smoke test that the lint workflow fires JOB_COMPLETE."""
     delivered: list[dict] = []

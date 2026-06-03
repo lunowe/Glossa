@@ -21,7 +21,6 @@ class Settings(BaseSettings):
     session_ttl_hours: int = 168  # 7 days
     session_cookie_secure: bool = False  # set true in production behind https; SameSite=Lax + Secure
 
-    default_llm_mode: str = "byo"
     # Provider-agnostic default (Pydantic AI provider name) for spaces that don't
     # set llm_config.provider. "openai" covers OpenAI and any OpenAI-compatible
     # endpoint via default_llm_endpoint (base_url).
@@ -30,13 +29,13 @@ class Settings(BaseSettings):
     default_llm_model: str = "gpt-4o-mini"
     default_llm_api_key: str | None = None
 
-    hosted_anthropic_api_key: str | None = None
-    hosted_default_model: str = "claude-opus-4-7"
-    hosted_default_effort: str = "high"
-    hosted_default_max_tokens: int = 16000
-    hosted_enable_thinking: bool = True
+    anthropic_api_key: str | None = None
+    anthropic_effort: str = "high"
+    anthropic_max_tokens: int = 16000
+    anthropic_enable_thinking: bool = True
 
     ingest_max_source_chars: int = 200_000
+    ingest_max_candidate_entities: int = 12
     # Agentic ingest ("wiki maintainer") guardrails. The maintainer agent edits
     # pages with surgical patch tools under these caps; hitting one ends the run
     # cleanly and is recorded (never silently truncated).

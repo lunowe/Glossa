@@ -1,12 +1,6 @@
 from datetime import datetime
-from enum import StrEnum
 
 from pydantic import BaseModel, Field
-
-
-class LLMMode(StrEnum):
-    HOSTED = "hosted"
-    BYO = "byo"
 
 
 class LLMConfig(BaseModel):
@@ -18,11 +12,6 @@ class LLMConfig(BaseModel):
     base_url: str | None = None
     model: str | None = None
     api_key_ref: str | None = None
-    # Back-compat: legacy two-mode config. ``mode=byo`` -> openai-compatible at
-    # ``endpoint``/``base_url``; ``mode=hosted`` -> anthropic. Used only when
-    # ``provider`` is unset.
-    mode: LLMMode = LLMMode.BYO
-    endpoint: str | None = None
     extra: dict = Field(default_factory=dict)
 
 

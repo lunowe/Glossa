@@ -12,7 +12,7 @@ locally with `docker compose up --build` (API at `:8200/docs`).
 `.claude/skills/glossa/` is the working knowledge for this codebase — the 5-object
 model, the HTTP API, the Python client, MCP, Obsidian sync, webhooks, internals,
 and testing. **Read it before working on Glossa**, and follow its conventions
-(e.g. logical page paths, 404-on-cross-tenant, `byo` is the only working LLM mode).
+(e.g. logical page paths, 404-on-cross-tenant, provider-based Pydantic AI inference).
 
 ## Keep the skill up to date
 

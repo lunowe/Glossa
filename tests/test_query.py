@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from pydantic_ai.models.test import TestModel
 
 from glossa.db.client import get_db
+from glossa.ingest.prompts import query_route_user_prompt
 from glossa.models.page import Page, PageKind
 from glossa.models.source import Source, SourceIngestionMode
 from glossa.models.space import Space
@@ -109,3 +110,9 @@ async def test_query_empty_wiki_returns_no_answer(storage, settings):
     assert response.cited_pages == []
     assert response.cited_sources == []
     assert "keine passenden" in response.answer.lower() or "no" in response.answer.lower()
+
+
+def test_query_route_prompt_uses_requested_max_pages():
+    prompt = query_route_user_prompt(index_markdown="# Index", question="Q", max_pages=12)
+    assert "Limit to at most 12 pages" in prompt
+    assert "Limit to at most 8 pages" not in prompt

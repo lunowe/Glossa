@@ -3,6 +3,7 @@ import pytest
 from glossa.utils import frontmatter
 from glossa.utils.json_parse import LLMJSONError, parse
 from glossa.utils.slug import slugify
+from glossa.utils.wikilinks import extract_wikilinks, normalize_page_path
 
 
 class TestFrontmatter:
@@ -69,3 +70,13 @@ class TestSlugify:
     def test_max_length(self):
         result = slugify("a" * 200, max_length=20)
         assert len(result) <= 20
+
+
+class TestWikilinks:
+    def test_normalize_page_path_storage_and_obsidian_variants(self):
+        assert normalize_page_path("pages/entities/company/allianz.md#Profil|Allianz") == "entities/company/allianz"
+        assert normalize_page_path("[[./entities/topic/cyber.md]]") == "entities/topic/cyber"
+
+    def test_extract_wikilinks_ignores_external_targets_by_default(self):
+        links = extract_wikilinks("[[pages/entities/a.md|A]] [[https://example.com/x]] [[#local]]")
+        assert links == ["entities/a"]

@@ -15,7 +15,7 @@ from glossa.llm import (
     resolve_provider,
     usage_to_dict,
 )
-from glossa.models.space import LLMConfig, LLMMode, Space, SpaceStats
+from glossa.models.space import LLMConfig, Space, SpaceStats
 
 
 def _space(cfg: LLMConfig) -> Space:
@@ -38,7 +38,7 @@ def _settings(**kw) -> Settings:
         _env_file=None,
         default_llm_endpoint="http://local/v1",
         default_llm_api_key="k",
-        hosted_anthropic_api_key="sk-ant",
+        anthropic_api_key="sk-ant",
     )
     base.update(kw)
     return Settings(**base)
@@ -47,13 +47,16 @@ def _settings(**kw) -> Settings:
 # --- build_model resolution ------------------------------------------------
 
 
-def test_byo_builds_openai_compatible():
-    model = build_model(_space(LLMConfig(mode=LLMMode.BYO)), _settings())
+def test_default_provider_builds_openai_compatible():
+    model = build_model(_space(LLMConfig()), _settings())
     assert isinstance(model, OpenAIChatModel)
 
 
-def test_hosted_builds_anthropic():
-    model = build_model(_space(LLMConfig(mode=LLMMode.HOSTED)), _settings())
+def test_default_provider_can_build_anthropic():
+    model = build_model(
+        _space(LLMConfig()),
+        _settings(default_llm_provider="anthropic", default_llm_model="claude-opus-4-7"),
+    )
     assert isinstance(model, AnthropicModel)
 
 
@@ -72,7 +75,7 @@ def test_provider_openai_with_base_url_builds_openai():
 def test_anthropic_without_key_raises():
     with pytest.raises(ValueError, match="Anthropic requires an API key"):
         build_model(
-            _space(LLMConfig(provider="anthropic")), _settings(hosted_anthropic_api_key=None, default_llm_api_key=None)
+            _space(LLMConfig(provider="anthropic")), _settings(anthropic_api_key=None, default_llm_api_key=None)
         )
 
 
@@ -90,27 +93,25 @@ def test_openai_without_key_or_base_url_raises():
 def test_resolve_provider_precedence():
     s = _settings()
     assert resolve_provider(_space(LLMConfig(provider="groq")), s) == "groq"
-    assert resolve_provider(_space(LLMConfig(mode=LLMMode.HOSTED)), s) == "anthropic"
     assert resolve_provider(_space(LLMConfig()), s) == "openai"
 
 
 def test_resolve_model_name_precedence():
-    s = _settings(default_llm_model="gpt-4o-mini", hosted_default_model="claude-opus-4-7")
+    s = _settings(default_llm_model="gpt-4o-mini")
     assert resolve_model_name(_space(LLMConfig(model="custom")), s) == "custom"
-    assert resolve_model_name(_space(LLMConfig(mode=LLMMode.HOSTED)), s) == "claude-opus-4-7"
     assert resolve_model_name(_space(LLMConfig()), s) == "gpt-4o-mini"
 
 
 # --- model settings --------------------------------------------------------
 
 
-def test_model_settings_byo_passes_temperature():
+def test_model_settings_openai_passes_temperature():
     ms = model_settings_for(_space(LLMConfig()), _settings(), temperature=0.3)
     assert ms == {"temperature": 0.3}
 
 
 def test_model_settings_anthropic_omits_temperature_enables_thinking_and_cache():
-    ms = model_settings_for(_space(LLMConfig(mode=LLMMode.HOSTED)), _settings(), temperature=0.3)
+    ms = model_settings_for(_space(LLMConfig(provider="anthropic")), _settings(), temperature=0.3)
     assert "temperature" not in ms
     assert ms["anthropic_cache_instructions"] is True
     assert ms["thinking"] is True

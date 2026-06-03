@@ -13,10 +13,9 @@ in the model). Guardrails (page / edit-byte / step caps) bound cost and the
 per-space lock hold; hitting one ends the run cleanly and is recorded.
 """
 
-import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, ModelRetry, RunContext
@@ -29,6 +28,8 @@ from glossa.ingest.prompts import SYSTEM_INGEST_EXTRACT, SYSTEM_INGEST_MAINTAIN,
 from glossa.ingest.working_copy import WorkingCopy
 from glossa.models.page import PageKind
 from glossa.utils import frontmatter, md_sections
+from glossa.utils.slug import slugify
+from glossa.utils.wikilinks import extract_wikilinks, normalize_page_path
 
 if TYPE_CHECKING:
     from pydantic_ai.models import Model
@@ -48,6 +49,8 @@ class EntityOut(BaseModel):
     title: str
     slug: str = ""
     page_path: str = ""
+    page_action: Literal["update_existing", "create_candidate", "summary_only"] = "create_candidate"
+    importance: int = Field(default=3, ge=1, le=5)
     relevance: str = ""
 
 
@@ -77,6 +80,8 @@ class MaintainerDeps:
     space_id: str
     source_id: str
     source_title: str
+    source_summary_markdown: str
+    summary_path: str
     max_pages: int
     max_edit_bytes: int
 
@@ -90,19 +95,9 @@ maintainer_agent = Agent(
 
 # --- Tool helpers ----------------------------------------------------------
 
-_WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
-
-
-def _wikilink_targets(content: str) -> list[str]:
-    targets: list[str] = []
-    for m in _WIKILINK_RE.finditer(content):
-        target = m.group(1).split("|", 1)[0].split("#", 1)[0].strip().removesuffix(".md")
-        if target:
-            targets.append(target)
-    return targets
-
 
 def _check_budget(deps: MaintainerDeps, path: str) -> None:
+    path = normalize_page_path(path)
     if path not in deps.wc.dirty and len(deps.wc.dirty) >= deps.max_pages:
         raise ModelRetry(f"Page budget reached ({deps.max_pages} pages). Finalize with the edits made so far.")
     if deps.wc.edited_bytes >= deps.max_edit_bytes:
@@ -110,10 +105,22 @@ def _check_budget(deps: MaintainerDeps, path: str) -> None:
 
 
 async def _load_existing(deps: MaintainerDeps, path: str) -> str:
+    path = normalize_page_path(path)
     content = await deps.wc.load(path)
     if not content:
         raise ModelRetry(f"Page {path!r} does not exist. Use create_page to create it, or choose an existing page.")
     return content
+
+
+def _page_search_score(*, query: str, path: str, title: str) -> int:
+    needle = query.strip().lower()
+    if not needle:
+        return 0
+    terms = [term for term in slugify(query).split("-") if len(term) >= 3]
+    haystack = f"{path.lower()} {title.lower()} {slugify(title)}"
+    score = 100 if needle in haystack else 0
+    score += sum(1 for term in terms if term in haystack)
+    return score
 
 
 # --- Read tools ------------------------------------------------------------
@@ -127,13 +134,14 @@ async def search_pages(ctx: RunContext[MaintainerDeps], query: str) -> list[dict
     exists, edit that page instead of making a near-duplicate.
     """
     db = get_db()
-    needle = query.strip().lower()
     cursor = db.pages.find({"space_id": ctx.deps.space_id}, {"path": 1, "title": 1, "kind": 1})
-    out: list[dict] = []
+    scored: list[tuple[int, dict]] = []
     async for d in cursor:
-        if needle in d["path"].lower() or needle in (d.get("title") or "").lower():
-            out.append({"path": d["path"], "title": d.get("title", ""), "kind": d.get("kind", "")})
-    return out[:20]
+        title = d.get("title") or ""
+        score = _page_search_score(query=query, path=d["path"], title=title)
+        if score:
+            scored.append((score, {"path": d["path"], "title": title, "kind": d.get("kind", "")}))
+    return [item for _score, item in sorted(scored, key=lambda row: (-row[0], row[1]["path"]))[:20]]
 
 
 @maintainer_agent.tool
@@ -153,21 +161,24 @@ async def read_index(ctx: RunContext[MaintainerDeps]) -> str:
 @maintainer_agent.tool
 async def read_page(ctx: RunContext[MaintainerDeps], path: str) -> str:
     """Read a page's full markdown (frontmatter + body). Returns a placeholder if absent."""
-    content = await ctx.deps.wc.load(path.removesuffix(".md"))
+    path = normalize_page_path(path)
+    if path == ctx.deps.summary_path:
+        return ctx.deps.source_summary_markdown or "(empty source summary)"
+    content = await ctx.deps.wc.load(path)
     return content or "(page does not exist)"
 
 
 @maintainer_agent.tool
 async def read_outline(ctx: RunContext[MaintainerDeps], path: str) -> list[dict]:
     """List a page's section headings (cheap). Read this before reading/editing a section."""
-    _, body = frontmatter.parse(await _load_existing(ctx.deps, path.removesuffix(".md")))
+    _, body = frontmatter.parse(await _load_existing(ctx.deps, path))
     return [{"heading": s["heading"], "level": s["level"]} for s in md_sections.outline(body)]
 
 
 @maintainer_agent.tool
 async def read_section(ctx: RunContext[MaintainerDeps], path: str, heading: str) -> str:
     """Read one section of a page by its heading text."""
-    _, body = frontmatter.parse(await _load_existing(ctx.deps, path.removesuffix(".md")))
+    _, body = frontmatter.parse(await _load_existing(ctx.deps, path))
     try:
         return md_sections.get_section(body, heading)
     except md_sections.SectionError as e:
@@ -183,7 +194,7 @@ async def replace_in_section(ctx: RunContext[MaintainerDeps], path: str, heading
 
     `old` must occur exactly once in that section. Prefer this for small changes.
     """
-    path = path.removesuffix(".md")
+    path = normalize_page_path(path)
     _check_budget(ctx.deps, path)
     fm, body = frontmatter.parse(await _load_existing(ctx.deps, path))
     try:
@@ -199,7 +210,7 @@ async def replace_in_section(ctx: RunContext[MaintainerDeps], path: str, heading
 @maintainer_agent.tool
 async def replace_section(ctx: RunContext[MaintainerDeps], path: str, heading: str, new_section_markdown: str) -> str:
     """Replace a whole section. `new_section_markdown` MUST include the heading line (e.g. '## Title')."""
-    path = path.removesuffix(".md")
+    path = normalize_page_path(path)
     _check_budget(ctx.deps, path)
     fm, body = frontmatter.parse(await _load_existing(ctx.deps, path))
     try:
@@ -218,7 +229,7 @@ async def add_section(
 
     Optionally insert immediately after an existing section's heading via `after`.
     """
-    path = path.removesuffix(".md")
+    path = normalize_page_path(path)
     _check_budget(ctx.deps, path)
     fm, body = frontmatter.parse(await _load_existing(ctx.deps, path))
     try:
@@ -232,7 +243,7 @@ async def add_section(
 @maintainer_agent.tool
 async def remove_section(ctx: RunContext[MaintainerDeps], path: str, heading: str) -> str:
     """Remove a section from a page by its heading text."""
-    path = path.removesuffix(".md")
+    path = normalize_page_path(path)
     _check_budget(ctx.deps, path)
     fm, body = frontmatter.parse(await _load_existing(ctx.deps, path))
     try:
@@ -252,7 +263,7 @@ async def create_page(ctx: RunContext[MaintainerDeps], path: str, kind: str, tit
     WITHOUT frontmatter (it is added automatically). Errors if the page already
     exists — edit it instead of creating a duplicate.
     """
-    path = path.removesuffix(".md")
+    path = normalize_page_path(path)
     await ctx.deps.wc.load(path)
     if ctx.deps.wc.exists(path):
         raise ModelRetry(f"Page {path!r} already exists — edit it instead of creating a duplicate.")
@@ -270,7 +281,8 @@ async def set_frontmatter(ctx: RunContext[MaintainerDeps], path: str, key: str, 
     """
     if key in ("source_refs", "updated_at"):
         raise ModelRetry(f"{key!r} is managed automatically; do not set it.")
-    path = path.removesuffix(".md")
+    path = normalize_page_path(path)
+    _check_budget(ctx.deps, path)
     fm, body = frontmatter.parse(await _load_existing(ctx.deps, path))
     fm[key] = value
     ctx.deps.wc.put(path, frontmatter.serialize(fm, body))
@@ -280,22 +292,25 @@ async def set_frontmatter(ctx: RunContext[MaintainerDeps], path: str, key: str, 
 # --- Output validation (self-correcting loop) ------------------------------
 
 
-async def _known_page_paths(space_id: str, wc: WorkingCopy) -> set[str]:
+async def _known_page_paths(space_id: str, wc: WorkingCopy, extra_paths: list[str] | None = None) -> set[str]:
     db = get_db()
-    paths = set(wc.dirty)
+    paths = {normalize_page_path(path) for path in wc.dirty}
+    for path in extra_paths or []:
+        normalized = normalize_page_path(path)
+        if normalized:
+            paths.add(normalized)
     cursor = db.pages.find({"space_id": space_id}, {"path": 1})
     async for d in cursor:
-        paths.add(d["path"])
+        paths.add(normalize_page_path(d["path"]))
     return paths
 
 
-@maintainer_agent.output_validator
-async def _validate_changes(ctx: RunContext[MaintainerDeps], report: MaintainerReport) -> MaintainerReport:
-    wc = ctx.deps.wc
+async def _working_copy_problems(
+    *, space_id: str, wc: WorkingCopy, extra_known_paths: list[str] | None = None
+) -> list[str]:
     if not wc.dirty:
-        # Nothing changed is allowed — the summary page still records the source.
-        return report
-    known = await _known_page_paths(ctx.deps.space_id, wc)
+        return []
+    known = await _known_page_paths(space_id, wc, extra_paths=extra_known_paths)
     problems: list[str] = []
     for path in sorted(wc.dirty):
         content = wc.content(path)
@@ -303,9 +318,28 @@ async def _validate_changes(ctx: RunContext[MaintainerDeps], report: MaintainerR
         for key in ("kind", "title"):
             if not fm.get(key):
                 problems.append(f"{path}: missing required frontmatter '{key}'")
-        for target in _wikilink_targets(content):
+        targets = extract_wikilinks(content)
+        for target in targets:
             if "/" in target and target not in known:
                 problems.append(f"{path}: link [[{target}]] does not resolve to any page")
+        kind = str(fm.get("kind") or wc.meta(path).get("kind") or "")
+        if kind in {"synthesis", "comparison"} or path.startswith("syntheses/"):
+            entity_targets = {target for target in targets if target.startswith("entities/")}
+            source_targets = {target for target in targets if target.startswith("summaries/src-")}
+            if len(entity_targets) < 2:
+                problems.append(f"{path}: synthesis pages must link at least two entity pages")
+            if not source_targets:
+                problems.append(f"{path}: synthesis pages must cite at least one source summary")
+    return problems
+
+
+@maintainer_agent.output_validator
+async def _validate_changes(ctx: RunContext[MaintainerDeps], report: MaintainerReport) -> MaintainerReport:
+    problems = await _working_copy_problems(
+        space_id=ctx.deps.space_id,
+        wc=ctx.deps.wc,
+        extra_known_paths=[ctx.deps.summary_path],
+    )
     if problems:
         raise ModelRetry("Fix these issues, then finish:\n- " + "\n- ".join(problems[:20]))
     return report
@@ -339,6 +373,8 @@ async def run_maintainer(
         space_id=space.id,
         source_id=source.id,
         source_title=source.title,
+        source_summary_markdown=source_summary_markdown,
+        summary_path=f"summaries/src-{source.id}",
         max_pages=settings.ingest_max_pages_per_run,
         max_edit_bytes=settings.ingest_max_edit_bytes,
     )
@@ -373,6 +409,14 @@ async def flush_working_copy(
 ) -> tuple[list[str], list[str]]:
     """Validate, stamp, and persist every touched page. Returns (created, updated)."""
     db = get_db()
+    problems = await _working_copy_problems(
+        space_id=space.id,
+        wc=wc,
+        extra_known_paths=[f"summaries/src-{source.id}"],
+    )
+    if problems:
+        raise RuntimeError("Refusing to flush invalid maintainer edits:\n- " + "\n- ".join(problems[:20]))
+
     now_iso = datetime.now(UTC).isoformat()
     created: list[str] = []
     updated: list[str] = []

@@ -7,7 +7,6 @@ this works without a separate retrieval index.
 """
 
 import logging
-import re
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
@@ -23,6 +22,7 @@ from glossa.ingest.prompts import (
 from glossa.llm import build_model, model_settings_for, resolve_model_name, resolve_provider, usage_to_dict
 from glossa.models.source import Source
 from glossa.usage import Operation, record_usage
+from glossa.utils.wikilinks import extract_wikilinks, normalize_page_path
 
 if TYPE_CHECKING:
     from pydantic_ai.models import Model
@@ -31,8 +31,6 @@ if TYPE_CHECKING:
     from glossa.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
-
-_WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
 
 
 class RouteOut(BaseModel):
@@ -90,7 +88,7 @@ async def answer_question(
     index_markdown = await storage.read_page(space_id, "index.md") or "(empty)"
 
     route_result = await query_route_agent.run(
-        query_route_user_prompt(index_markdown=index_markdown, question=request.question),
+        query_route_user_prompt(index_markdown=index_markdown, question=request.question, max_pages=request.max_pages),
         model=model,
         model_settings=model_settings_for(space, settings, temperature=0.0),
     )
@@ -102,7 +100,7 @@ async def answer_question(
         usage=usage_to_dict(route_result.usage, provider=provider),
     )
     route_out: RouteOut = route_result.output
-    pages_to_load = [str(p).removesuffix(".md") for p in route_out.pages_to_load][: request.max_pages]
+    pages_to_load = [normalize_page_path(p) for p in route_out.pages_to_load][: request.max_pages]
     reasoning = route_out.reasoning
 
     pages_loaded: list[dict] = []
@@ -138,7 +136,7 @@ async def answer_question(
     )
     answer = answer_result.output.strip()
 
-    cited_pages = sorted({m.group(1).removesuffix(".md") for m in _WIKILINK_RE.finditer(answer)})
+    cited_pages = sorted(set(extract_wikilinks(answer)))
     cited_sources = await _resolve_cited_sources(space_id, cited_pages)
 
     return QueryResponse(

@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from glossa.auth import AuthContext, get_auth_context, space_query
 from glossa.db.client import get_db
 from glossa.models.page import Page, PageWithContent
+from glossa.utils.wikilinks import normalize_page_path
 
 router = APIRouter(prefix="/spaces/{space_id}", tags=["pages"])
 
@@ -39,10 +40,11 @@ async def get_page(
     db = get_db()
     if not await db.spaces.find_one(space_query(space_id, ctx), {"id": 1}):
         raise HTTPException(status_code=404, detail="space not found")
+    path = normalize_page_path(path)
     doc = await db.pages.find_one({"space_id": space_id, "path": path})
     if not doc:
         raise HTTPException(status_code=404, detail="page not found")
-    storage_path = path if path.endswith(".md") else f"pages/{path}.md"
+    storage_path = f"pages/{path}.md"
     content = await request.app.state.storage.read_page(space_id, storage_path)
     return PageWithContent(**Page.model_validate(doc).model_dump(), content=content)
 

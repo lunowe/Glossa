@@ -15,6 +15,7 @@ class Operation(StrEnum):
     INGEST_UPDATE_PAGE = "ingest.update_page"
     QUERY_ROUTE = "query.route"
     QUERY_ANSWER = "query.answer"
+    CHAT = "chat"
     LINT = "lint"
 
 

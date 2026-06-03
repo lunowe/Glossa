@@ -10,39 +10,17 @@ valid targets but never as orphans (they are auto-maintained and outside the
 ``pages/`` collection).
 """
 
-import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from glossa.db.client import get_db
+from glossa.utils.wikilinks import extract_wikilinks
 
 if TYPE_CHECKING:
     from glossa.storage.base import StorageBackend
 
 
 SYSTEM_PAGE_TARGETS = frozenset({"index", "log", "schema", "lint_report"})
-
-_WIKILINK_RE = re.compile(r"\[\[([^\]\n]+?)\]\]")
-
-
-def extract_wikilinks(markdown: str) -> list[str]:
-    """Return the page-path target of every ``[[...]]`` in the markdown.
-
-    Strips an optional ``|alt`` suffix, an optional ``#anchor`` suffix, an
-    optional leading ``pages/`` prefix, and an optional trailing ``.md``.
-    Embed-style ``![[...]]`` is also captured (the leading ``!`` is ignored).
-    """
-    targets: list[str] = []
-    for raw in _WIKILINK_RE.findall(markdown):
-        target = raw.split("|", 1)[0].split("#", 1)[0].strip()
-        if not target:
-            continue
-        if target.startswith("pages/"):
-            target = target[len("pages/") :]
-        if target.endswith(".md"):
-            target = target[: -len(".md")]
-        targets.append(target)
-    return targets
 
 
 @dataclass

@@ -14,9 +14,13 @@ from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
 
 from glossa.db.client import get_db
-from glossa.ingest.agents import extract_agent, maintainer_agent
-from glossa.ingest.workflow import run_ingest
+from glossa.ingest.agents import _working_copy_problems, extract_agent, maintainer_agent
+from glossa.ingest.extract import ExtractedEntity
+from glossa.ingest.workflow import _maintainer_entities, run_ingest
+from glossa.ingest.working_copy import WorkingCopy
+from glossa.lint import scanner
 from glossa.models.job import Job, JobKind, JobStatus
+from glossa.models.page import Page, PageKind
 from glossa.models.source import Source, SourceIngestionMode, SourceStatus
 from glossa.models.space import Space
 
@@ -98,6 +102,30 @@ def _never_finishes_model():
     """FunctionModel that keeps calling a read tool forever (to trigger the step cap)."""
 
     def fn(messages, info):
+        return ModelResponse(parts=[ToolCallPart(tool_name="read_index", args={})])
+
+    return FunctionModel(fn)
+
+
+def _dirty_then_never_finishes_model():
+    """Create one invalid dirty page, then keep calling read tools until capped."""
+
+    def fn(messages, info):
+        tool_returns = [p for m in messages for p in getattr(m, "parts", []) if isinstance(p, ToolReturnPart)]
+        if not tool_returns:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="create_page",
+                        args={
+                            "path": "entities/company/allianz",
+                            "kind": "entity",
+                            "title": "Allianz",
+                            "body": "# Allianz\n\nBroken relation to [[entities/topic/missing]].",
+                        },
+                    )
+                ]
+            )
         return ModelResponse(parts=[ToolCallPart(tool_name="read_index", args={})])
 
     return FunctionModel(fn)
@@ -263,6 +291,10 @@ async def test_ingest_second_source_updates_existing_entity(storage, settings):
     page_doc = await db.pages.find_one({"space_id": space.id, "path": "entities/company/allianz"})
     assert set(page_doc["source_refs"]) == {"src_one", "src_two"}
 
+    summary = await storage.read_page(space.id, "pages/summaries/src-src_two.md")
+    assert "[[entities/company/allianz]]" in summary
+    assert "entities/organization/allianz-se" not in summary
+
     allianz_file = await storage.read_page(space.id, "pages/entities/company/allianz.md")
     assert "First entry" in allianz_file  # surgical edit preserved existing content
     assert "Studie 2024" in allianz_file
@@ -341,6 +373,10 @@ async def test_ingest_maintainer_dedups_via_search(storage, settings):
     page_doc = await db.pages.find_one({"space_id": space.id, "path": "entities/company/allianz"})
     assert set(page_doc["source_refs"]) == {"src_one", "src_two"}
 
+    summary = await storage.read_page(space.id, "pages/summaries/src-src_two.md")
+    assert "[[entities/company/allianz]]" in summary
+    assert "entities/organization/allianz-se" not in summary
+
 
 async def test_ingest_creates_synthesis_page(storage, settings):
     space, source, job = await _seed_space_and_source(storage)
@@ -409,6 +445,86 @@ async def test_ingest_creates_synthesis_page(storage, settings):
     assert "[[syntheses/allianz-cyber]]" in index
 
 
+async def test_maintainer_entities_filters_summary_only_caps_and_canonicalizes(storage, settings):
+    space, _source, _job = await _seed_space_and_source(storage)
+    db = get_db()
+    now = datetime.now(UTC)
+    await db.pages.insert_one(
+        Page(
+            space_id=space.id,
+            path="entities/company/allianz",
+            kind=PageKind.ENTITY,
+            title="Allianz",
+            updated_at=now,
+        ).model_dump()
+    )
+    candidates = await _maintainer_entities(
+        space_id=space.id,
+        max_entities=1,
+        extracted_entities=[
+            ExtractedEntity(
+                type="person",
+                title="Max Mustermann",
+                slug="max-mustermann",
+                page_path="entities/person/max-mustermann",
+                page_action="summary_only",
+                importance=5,
+                relevance="mentioned once",
+            ),
+            ExtractedEntity(
+                type="organization",
+                title="Allianz",
+                slug="allianz-se",
+                page_path="entities/organization/allianz-se",
+                page_action="create_candidate",
+                importance=4,
+                relevance="canonical company",
+            ),
+            ExtractedEntity(
+                type="topic",
+                title="Cyberversicherung",
+                slug="cyberversicherung",
+                page_path="entities/topic/cyberversicherung",
+                page_action="create_candidate",
+                importance=3,
+                relevance="topic",
+            ),
+        ],
+    )
+
+    assert candidates == [
+        {
+            "type": "organization",
+            "title": "Allianz",
+            "page_path": "entities/company/allianz",
+            "page_action": "update_existing",
+            "importance": 4,
+            "relevance": "canonical company",
+        }
+    ]
+
+
+async def test_synthesis_validation_requires_two_entities_and_source(storage):
+    await storage.init_space("gls_synth")
+    wc = WorkingCopy(storage, "gls_synth")
+    wc.put(
+        "syntheses/weak",
+        "---\nkind: synthesis\ntitle: Weak\n---\n\n# Weak\n\nOnly [[entities/company/allianz]] "
+        "([[summaries/src-src_one]]).",
+        created=True,
+        kind="synthesis",
+        title="Weak",
+    )
+
+    problems = await _working_copy_problems(
+        space_id="gls_synth",
+        wc=wc,
+        extra_known_paths=["summaries/src-src_one", "entities/company/allianz"],
+    )
+
+    assert "syntheses/weak: synthesis pages must link at least two entity pages" in problems
+
+
 async def test_ingest_step_cap_partial_then_succeeds(storage, settings):
     """Hitting the step cap ends the run cleanly: the job still succeeds and the log notes it."""
     settings.ingest_max_agent_steps = 2
@@ -436,6 +552,40 @@ async def test_ingest_step_cap_partial_then_succeeds(storage, settings):
     assert "partial" in result.log_entry
     # The summary page is still written even when the maintainer is capped.
     assert "summaries/src-src_one" in result.pages_created
+    summary = await storage.read_page(space.id, "pages/summaries/src-src_one.md")
+    assert "[[entities/company/allianz]]" not in summary
+
+    pages = await scanner.load_pages(storage, space.id)
+    scan_result = scanner.scan_deterministic(pages)
+    assert not any(f.category == "broken_link" for f in scan_result.findings)
+
+
+async def test_ingest_step_cap_refuses_invalid_dirty_pages(storage, settings):
+    settings.ingest_max_agent_steps = 3
+    space, source, job = await _seed_space_and_source(storage)
+    extract = _extraction_model(
+        entities=[
+            {
+                "type": "company",
+                "title": "Allianz",
+                "slug": "allianz",
+                "page_path": "entities/company/allianz",
+                "relevance": "x",
+            }
+        ],
+        summary="S",
+        blurb="b",
+    )
+    with (
+        extract_agent.override(model=extract),
+        maintainer_agent.override(model=_dirty_then_never_finishes_model()),
+        pytest.raises(RuntimeError, match="Refusing to flush invalid maintainer edits"),
+    ):
+        await run_ingest(job_id=job.id, space_id=space.id, source_id=source.id, storage=storage, settings=settings)
+
+    assert not await storage.read_page(space.id, "pages/entities/company/allianz.md")
+    db = get_db()
+    assert await db.pages.find_one({"space_id": space.id, "path": "entities/company/allianz"}) is None
 
 
 async def test_ingest_extract_failure_raises(storage, settings):

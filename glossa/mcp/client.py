@@ -183,5 +183,25 @@ class GlossaClient:
             json={"question": question, "max_pages": max_pages},
         )
 
+    async def chat(
+        self,
+        space_id: str,
+        *,
+        message: str,
+        context: str | None = None,
+        max_pages: int = 8,
+        allow_writes: bool = False,
+    ) -> dict:
+        return await self._request(
+            "POST",
+            f"/spaces/{space_id}/chat",
+            json={
+                "messages": [{"role": "user", "content": message}],
+                "context": context,
+                "max_pages": max_pages,
+                "allow_writes": allow_writes,
+            },
+        )
+
     async def lint(self, space_id: str) -> dict:
         return await self._request("POST", f"/spaces/{space_id}/lint")

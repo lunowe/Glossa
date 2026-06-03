@@ -12,6 +12,7 @@ from glossa.ingest.agents import ExtractionOut, extract_agent
 from glossa.ingest.prompts import extract_user_prompt
 from glossa.llm import usage_to_dict
 from glossa.utils.slug import slugify
+from glossa.utils.wikilinks import normalize_page_path
 
 if TYPE_CHECKING:
     from pydantic_ai.models import Model
@@ -23,6 +24,8 @@ class ExtractedEntity:
     title: str
     slug: str
     page_path: str
+    page_action: str
+    importance: int
     relevance: str
 
 
@@ -44,11 +47,13 @@ async def extract_from_source(
     schema_markdown: str,
     source: dict,
     source_content: str,
+    max_candidate_entities: int,
 ) -> Extraction:
     user_prompt = extract_user_prompt(
         schema_markdown=schema_markdown,
         source=source,
         source_content=source_content,
+        max_candidate_entities=max_candidate_entities,
     )
     result = await extract_agent.run(user_prompt, model=model, model_settings=model_settings)
     data: ExtractionOut = result.output
@@ -58,14 +63,16 @@ async def extract_from_source(
         if not e.title:
             continue
         entity_type = e.type or "topic"
-        slug = e.slug or slugify(e.title)
-        page_path = (e.page_path or f"entities/{slugify(entity_type)}/{slug}").removesuffix(".md")
+        slug = slugify(e.slug or e.title)
+        page_path = normalize_page_path(e.page_path or f"entities/{slugify(entity_type)}/{slug}")
         entities.append(
             ExtractedEntity(
                 type=entity_type,
                 title=e.title,
                 slug=slug,
                 page_path=page_path,
+                page_action=e.page_action,
+                importance=e.importance,
                 relevance=e.relevance or "",
             )
         )

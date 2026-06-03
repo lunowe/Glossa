@@ -76,6 +76,31 @@ def build_server(client: GlossaClient) -> FastMCP:
         return await client.query(resolved, question=question, max_pages=max_pages)
 
     @mcp.tool()
+    async def glossa_chat(
+        message: str,
+        space_id: str | None = None,
+        context: str | None = None,
+        max_pages: int = 8,
+        allow_writes: bool = False,
+    ) -> dict:
+        """Have an interactive wiki chat turn with optional write-back.
+
+        Chat can use tools to read the wiki index, recent log entries, and
+        selected pages. With ``allow_writes=True`` it may save a compact durable
+        note under ``notes/<slug>`` when the user explicitly asks to save or
+        remember the result. For streaming tool-call events, use the HTTP
+        ``POST /spaces/{space_id}/chat/stream`` endpoint directly.
+        """
+        resolved = client.resolve_space_id(space_id)
+        return await client.chat(
+            resolved,
+            message=message,
+            context=context,
+            max_pages=max_pages,
+            allow_writes=allow_writes,
+        )
+
+    @mcp.tool()
     async def glossa_list_pages(
         space_id: str | None = None,
         kind: str | None = None,

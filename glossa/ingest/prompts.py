@@ -38,6 +38,8 @@ Workflow:
   MUST resolve to a page that already exists or that you create in this run.
 - Create or extend a synthesis page under syntheses/ when this source meaningfully
   connects multiple entities (a relationship, theme, or comparison).
+- A synthesis/comparison page must cite this source and link at least two durable
+  entity pages; do not create one for a mere co-mention.
 - Follow the Space's schema.md for entity types, naming, tone, and language.
 - The source_refs and updated_at frontmatter keys are managed automatically — do
   not set them yourself.
@@ -65,7 +67,7 @@ Rules:
 - Output markdown, no JSON, no preamble."""
 
 
-def extract_user_prompt(*, schema_markdown: str, source: dict, source_content: str) -> str:
+def extract_user_prompt(*, schema_markdown: str, source: dict, source_content: str, max_candidate_entities: int) -> str:
     return f"""\
 === SCHEMA ===
 {schema_markdown}
@@ -80,11 +82,24 @@ content:
 {source_content}
 
 === TASK ===
-Identify the entities and concepts in this source that should have wiki pages
-(new or updated). For each, give its schema entity type, canonical title, a
-url-safe slug, a page_path like "entities/<type>/<slug>", and a one-sentence
-note on what this source adds about it. Also write a self-contained 200-600 word
-source summary in the schema's tone (markdown), and a one-line log blurb.
+Identify at most {max_candidate_entities} durable entities or concepts in this
+source that should have wiki pages. Do not output every named mention. Skip
+one-off names, generic concepts, and details that belong only in the source
+summary.
+
+For each candidate, give:
+- schema entity type
+- canonical title
+- url-safe slug
+- page_path like "entities/<type>/<slug>"
+- page_action: "update_existing" when this should primarily enrich a canonical
+  existing page, "create_candidate" when it is likely worth a new durable page,
+  or "summary_only" when it is useful context but should not get a page
+- importance from 1-5, where 5 is central to this source
+- a one-sentence note on what this source adds
+
+Return candidates in descending importance. Also write a self-contained 200-600
+word source summary in the schema's tone (markdown), and a one-line log blurb.
 """
 
 
@@ -98,7 +113,8 @@ def maintainer_user_prompt(
 ) -> str:
     if entities:
         entities_block = "\n".join(
-            f"- {e['title']} [{e['type']}] → suggested path: {e['page_path']}\n  what's new: {e['relevance']}"
+            f"- {e['title']} [{e['type']}, {e['page_action']}, importance {e['importance']}] "
+            f"→ suggested path: {e['page_path']}\n  what's new: {e['relevance']}"
             for e in entities
         )
     else:
@@ -122,11 +138,12 @@ Summary of this source:
 Update the wiki for this source using the tools. Dedup against existing pages,
 make the smallest edits that add what is new, cite new claims with
 [[summaries/src-{source_id}]], keep every wikilink resolvable, and add or extend a
-synthesis page when this source connects multiple entities.
+synthesis page only when this source states a specific relationship, comparison,
+or tension between at least two durable entity pages.
 """
 
 
-def query_route_user_prompt(*, index_markdown: str, question: str) -> str:
+def query_route_user_prompt(*, index_markdown: str, question: str, max_pages: int) -> str:
     return f"""\
 === INDEX ===
 {index_markdown}
@@ -140,7 +157,7 @@ Return JSON:
   "reasoning": "<short explanation>"
 }}
 
-Limit to at most 8 pages. Use page paths exactly as they appear in the index."""
+Limit to at most {max_pages} pages. Use page paths exactly as they appear in the index."""
 
 
 def query_answer_user_prompt(*, schema_markdown: str, pages: list[dict], question: str) -> str:
